@@ -1,0 +1,12 @@
+﻿build/
+dist/
+*.spec
+*.exe
+*.mp4
+*.mp3
+*.jpg
+*.png
+*.json
+__pycache__/
+*.pyc
+local_clips/
