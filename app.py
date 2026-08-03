@@ -62,7 +62,7 @@ class ModernBrutalAIGeneratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Universal AI Video Generator - Pro Local Engine")
-        self.root.geometry("900;820".replace(';', 'x'))
+        self.root.geometry("900x820")
         self.root.configure(bg="#121212")
 
         self.last_rendered_file = None
@@ -91,7 +91,8 @@ class ModernBrutalAIGeneratorApp:
         title_lbl = tk.Label(header_frame, text="APEX AI VIDEO STUDIO", bg="#121212", fg="#00E676", font=("Segoe UI", 16, "bold"))
         title_lbl.pack(side="left")
 
-        self.lbl_backend_status = tk.Label(header_frame, text="● Checking GPU Backend...", bg="#2A2A2A", fg="#FFD54F", font=("Segoe UI", 9, "bold"), px=10, py=4)
+        # Fixed padding parameters: padx and pady
+        self.lbl_backend_status = tk.Label(header_frame, text="● Checking GPU Backend...", bg="#2A2A2A", fg="#FFD54F", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
         self.lbl_backend_status.pack(side="right")
 
         # 1. Card: Prompt Input
