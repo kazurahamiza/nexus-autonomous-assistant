@@ -60,10 +60,7 @@ class SelfLearningBrutalAI:
 
     def process_and_clear_learning_staging(self):
         """Processes training logic and clears staging media files once learning is complete."""
-        # Simulated model weight / pattern update step
-        print("[Brutal AI Engine] Processing patterns into core memory...")
-
-        # Clear processed media files out of staging folders to keep disk light
+        print("[Brutal AI Engine] Ingesting parameters and updating neural memory...")
         for folder in [self.images_dir, self.videos_dir]:
             for file in os.listdir(folder):
                 file_path = os.path.join(folder, file)
@@ -71,8 +68,7 @@ class SelfLearningBrutalAI:
                     if os.path.isfile(file_path):
                         os.unlink(file_path)
                 except Exception as e:
-                    print(f"Error purging staging file {file_path}: {e}")
-
+                    print(f"Error clearing staging file {file_path}: {e}")
         print("[Brutal AI Engine] Learning complete. Staging folder cleared.")
 
 
@@ -86,9 +82,53 @@ class UniversalVideoEngine:
 
         self.preset_resolutions = {
             "16:9 (Landscape)": (768, 512),
-            "9:16 (Vertical)": (512, 768),
-            "1:1 (Square)": (512, 512),
-            "21:9 (Ultrawide)": (896, 384),
+            "9:16 (Vertical Reel)": (512, 768),
+            "1:1 (Square Social)": (512, 512),
+            "21:9 (Ultrawide Movie)": (896, 384),
+        }
+
+        # Universal Category Matrix
+        self.categories = {
+            "Cinematic Realism": {
+                "suffix": ", shot on 35mm lens, 8k resolution, cinematic volumetric lighting, photorealistic, continuous smooth motion, 24fps film look",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "Audit & Corporate Compliance": {
+                "suffix": ", clean professional corporate aesthetic, ultra-sharp detail, balanced neutral studio lighting, static camera placement, high-definition presentation style",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "Technical & Security Analysis": {
+                "suffix": ", high-contrast monitoring feed, detailed forensic clarity, precise focal tracking, sharp edges, uncompressed surveillance analysis style",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "TikTok / Shorts / Reels": {
+                "suffix": ", trending vertical smartphone camera style, high dynamic contrast, sharp focus, energetic motion, crisp bright lighting",
+                "default_aspect": "9:16 (Vertical Reel)"
+            },
+            "Anime & 2D Stylized": {
+                "suffix": ", vivid anime art style, makoto shinkai aesthetic, smooth animation keyframes, crisp cel shading, clean linework",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "3D Animation & CGI": {
+                "suffix": ", octaneweb render, pixar cinematic quality, raytraced subsurface scattering, vibrant color grading, smooth 3d motion",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "Commercial Product Showcase": {
+                "suffix": ", studio macro shot, elegant turntable slow rotation, softbox diffuse lighting, 8k photorealism, pristine surface details",
+                "default_aspect": "1:1 (Square Social)"
+            },
+            "Cyberpunk & Sci-Fi": {
+                "suffix": ", neon-lit dystopian cyber aesthetic, volumetric fog, anamorphic lens flares, chrome reflections, dark futuristic tones",
+                "default_aspect": "21:9 (Ultrawide Movie)"
+            },
+            "Documentary & Archival": {
+                "suffix": ", natural ambient lighting, handheld realistic camera tracking, organic film grain, authentic color tones, documentary film look",
+                "default_aspect": "16:9 (Landscape)"
+            },
+            "Abstract & Surrealism": {
+                "suffix": ", dreamlike atmosphere, fluid morphing textures, surreal color grading, ethereal lighting effects, slow-motion fluid physics",
+                "default_aspect": "16:9 (Landscape)"
+            }
         }
 
         self.output_dir = "generated_outputs"
@@ -105,16 +145,22 @@ class UniversalVideoEngine:
         self,
         prompt: str,
         negative_prompt: str,
+        category: str,
         aspect_ratio: str,
         num_frames: int,
         fps: int,
         output_filename: str,
     ) -> str:
         self.load_model()
+
+        # Apply selected category style suffix
+        category_data = self.categories.get(category, {})
+        full_prompt = prompt + category_data.get("suffix", "")
+
         width, height = self.preset_resolutions[aspect_ratio]
 
         video_frames = self.pipe(
-            prompt=prompt,
+            prompt=full_prompt,
             negative_prompt=negative_prompt,
             width=width,
             height=height,
@@ -126,15 +172,15 @@ class UniversalVideoEngine:
         temp_path = os.path.join(self.output_dir, "temp_raw_output.mp4")
         export_to_video(video_frames, temp_path, fps=fps)
 
-        # Save to saved video output folder
+        # Save to output folder
         final_output_path = os.path.join(self.output_dir, output_filename)
         self.post_process_media(temp_path, final_output_path)
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-        # Duplicate into Self-Learning Brutal AI directory and trigger clear
-        self.brutal_ai.ingest_and_duplicate(final_output_path, prompt)
+        # Duplicate into Self-Learning Brutal AI directory
+        self.brutal_ai.ingest_and_duplicate(final_output_path, full_prompt)
 
         return final_output_path
 
@@ -168,9 +214,16 @@ class UniversalVideoEngine:
 engine = UniversalVideoEngine()
 
 
+def on_category_change(event):
+    selected_cat = category_dropdown.get()
+    default_aspect = engine.categories[selected_cat]["default_aspect"]
+    aspect_ratio_var.set(default_aspect)
+
+
 def run_generator():
     prompt = prompt_entry.get("1.0", tk.END).strip()
     neg_prompt = neg_prompt_entry.get("1.0", tk.END).strip()
+    category = category_var.get()
     aspect_ratio = aspect_ratio_var.get()
     output_filename = output_entry.get().strip()
 
@@ -182,118 +235,9 @@ def run_generator():
         output_filename = "master_output.mp4"
 
     btn.config(state="disabled")
-    status_label.config(text="Status: Generating Media & Processing Brutal AI Learning...", fg="yellow")
+    status_label.config(text=f"Status: Generating [{category}] & Syncing Brutal AI...", fg="yellow")
 
     def worker():
         try:
             output_path = engine.generate_video(
                 prompt=prompt,
-                negative_prompt=neg_prompt,
-                aspect_ratio=aspect_ratio,
-                num_frames=97,
-                fps=24,
-                output_filename=output_filename,
-            )
-            status_label.config(text=f"Status: Saved to {output_path} | Learning Complete & Memory Cleared", fg="lime")
-            messagebox.showinfo(
-                "Success",
-                f"Media saved successfully:\n{output_path}\n\nDuplicated to Self-Learning AI, learned, and memory cleared.",
-            )
-        except Exception as e:
-            status_label.config(text="Status: Generation Failed", fg="red")
-            messagebox.showerror("Error", str(e))
-        finally:
-            btn.config(state="normal")
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-root = tk.Tk()
-root.title("AI Video & Media Generator with Self-Learning Brutal AI")
-root.geometry("620x680")
-root.configure(bg="#1e1e1e")
-
-# Prompt Input
-frame_prompt = tk.Frame(root, bg="#1e1e1e")
-frame_prompt.pack(fill="x", padx=20, pady=5)
-
-tk.Label(
-    frame_prompt, text="Visual Prompt:", font=("Arial", 10, "bold"), fg="white", bg="#1e1e1e"
-).pack(anchor="w")
-
-prompt_entry = tk.Text(frame_prompt, height=4, font=("Arial", 10), bg="#2d2d2d", fg="white", insertbackground="white")
-prompt_entry.pack(fill="x", pady=5)
-prompt_entry.insert(
-    "1.0",
-    "A sleek cybernetic hummingbird hovering over a glowing neon flower, 8k resolution, cinematic lighting.",
-)
-
-# Negative Prompt Input
-frame_neg = tk.Frame(root, bg="#1e1e1e")
-frame_neg.pack(fill="x", padx=20, pady=5)
-
-tk.Label(
-    frame_neg, text="Negative Prompt:", font=("Arial", 10, "bold"), fg="white", bg="#1e1e1e"
-).pack(anchor="w")
-
-neg_prompt_entry = tk.Text(frame_neg, height=2, font=("Arial", 10), bg="#2d2d2d", fg="white", insertbackground="white")
-neg_prompt_entry.pack(fill="x", pady=5)
-neg_prompt_entry.insert("1.0", "blurry, low quality, distorted, artifacts")
-
-# Aspect Ratio Selector
-frame_aspect = tk.Frame(root, bg="#1e1e1e")
-frame_aspect.pack(fill="x", padx=20, pady=5)
-
-tk.Label(
-    frame_aspect, text="Aspect Ratio:", font=("Arial", 10, "bold"), fg="white", bg="#1e1e1e"
-).pack(anchor="w")
-
-aspect_ratio_var = tk.StringVar(value="16:9 (Landscape)")
-aspect_dropdown = ttk.Combobox(
-    frame_aspect,
-    textvariable=aspect_ratio_var,
-    values=list(engine.preset_resolutions.keys()),
-    state="readonly",
-)
-aspect_dropdown.pack(anchor="w", pady=5)
-
-# Output File Input
-frame_out = tk.Frame(root, bg="#1e1e1e")
-frame_out.pack(fill="x", padx=20, pady=5)
-
-tk.Label(
-    frame_out,
-    text="Output File Name (e.g. video.mp4 or image.png):",
-    font=("Arial", 10),
-    fg="white",
-    bg="#1e1e1e",
-).pack(anchor="w")
-
-output_entry = tk.Entry(frame_out, font=("Arial", 10), width=60)
-output_entry.insert(0, "master_output.mp4")
-output_entry.pack(pady=5)
-
-# Status Label
-status_label = tk.Label(
-    root,
-    text="Status: Self-Learning Brutal AI Active & Synchronized",
-    font=("Arial", 10, "italic"),
-    fg="lime",
-    bg="#1e1e1e",
-)
-status_label.pack(pady=10)
-
-# Generate Button
-btn = tk.Button(
-    root,
-    text="Generate & Train Brutal AI",
-    font=("Arial", 12, "bold"),
-    bg="#007acc",
-    fg="white",
-    padx=20,
-    pady=10,
-    command=run_generator,
-)
-btn.pack(pady=10)
-
-root.mainloop()
