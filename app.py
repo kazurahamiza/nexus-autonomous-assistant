@@ -38,6 +38,7 @@ clip_model = CLIPModel.from_pretrained(MODEL_NAME).to(device)
 clip_processor = CLIPProcessor.from_pretrained(MODEL_NAME)
 
 visual_memory = {}
+SUPPORTED_EXTENSIONS = (".mp4", ".jpg", ".png", ".jpeg")
 
 
 def load_memory():
@@ -73,15 +74,19 @@ def get_audio_duration(audio_path, ffmpeg_bin):
     return 5.0
 
 
-def extract_keyframe(video_path, ffmpeg_bin):
-    thumb_path = video_path + "_thumb.jpg"
+def extract_keyframe(media_path, ffmpeg_bin):
+    """Generates a keyframe image from video or returns image path if already an image."""
+    if media_path.lower().endswith((".jpg", ".png", ".jpeg")):
+        return media_path
+
+    thumb_path = media_path + "_thumb.jpg"
     cmd = [
         ffmpeg_bin,
         "-y",
         "-ss",
         "00:00:01",
         "-i",
-        video_path,
+        media_path,
         "-vframes",
         "1",
         "-q:v",
@@ -94,16 +99,16 @@ def extract_keyframe(video_path, ffmpeg_bin):
     return thumb_path
 
 
-def absorb_video(video_path):
-    """Processes a video into vector embeddings and saves to clip_memory.json."""
-    file_name = os.path.basename(video_path)
+def absorb_video(media_path):
+    """Processes video or image file into vector embeddings and saves to clip_memory.json."""
+    file_name = os.path.basename(media_path)
     if file_name in visual_memory:
         return
 
     ffmpeg_bin = get_ffmpeg_path()
     thumb_path = None
     try:
-        thumb_path = extract_keyframe(video_path, ffmpeg_bin)
+        thumb_path = extract_keyframe(media_path, ffmpeg_bin)
         if os.path.exists(thumb_path):
             image = Image.open(thumb_path)
             inputs = clip_processor(images=image, return_tensors="pt").to(
@@ -116,7 +121,7 @@ def absorb_video(video_path):
                 )
 
             visual_memory[file_name] = {
-                "path": video_path,
+                "path": media_path,
                 "vector": image_features.cpu().numpy().tolist()[0],
             }
             save_memory()
@@ -124,8 +129,12 @@ def absorb_video(video_path):
     except Exception as e:
         print(f"[!] Error absorbing {file_name}: {e}")
     finally:
-        # Cleanup temporary thumbnail
-        if thumb_path and os.path.exists(thumb_path):
+        # Delete generated temporary thumbnail if it was extracted from video
+        if (
+            thumb_path
+            and thumb_path != media_path
+            and os.path.exists(thumb_path)
+        ):
             try:
                 os.remove(thumb_path)
             except Exception:
@@ -135,14 +144,16 @@ def absorb_video(video_path):
 def scan_and_absorb_all():
     load_memory()
     for f in os.listdir(CLIPS_FOLDER):
-        if f.lower().endswith(".mp4"):
+        if f.lower().endswith(SUPPORTED_EXTENSIONS):
             absorb_video(os.path.join(CLIPS_FOLDER, f))
 
 
 class AutoAbsorbHandler(FileSystemEventHandler):
 
     def on_created(self, event):
-        if not event.is_directory and event.src_path.lower().endswith(".mp4"):
+        if not event.is_directory and event.src_path.lower().endswith(
+            SUPPORTED_EXTENSIONS
+        ):
             time.sleep(1)
             absorb_video(event.src_path)
 
@@ -198,32 +209,60 @@ def create_narrated_scene(sentence_text, index, ffmpeg_bin):
     clean_text = sentence_text.replace("'", "'\\''").replace(":", "\\:")
 
     if bg_path and os.path.exists(bg_path):
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-stream_loop",
-            "-1",
-            "-i",
-            bg_path,
-            "-i",
-            audio_path,
-            "-vf",
-            (
-                f"scale=1280:720:force_original_aspect_ratio=increase,"
-                f"crop=1280:720,"
-                f"drawtext=text='{clean_text}':fontcolor=white:fontsize=28:"
-                f"x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10"
-            ),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-t",
-            str(duration),
-            video_path,
-        ]
+        if bg_path.lower().endswith((".jpg", ".png", ".jpeg")):
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                bg_path,
+                "-i",
+                audio_path,
+                "-vf",
+                (
+                    f"scale=1280:720:force_original_aspect_ratio=increase,"
+                    f"crop=1280:720,"
+                    f"drawtext=text='{clean_text}':fontcolor=white:fontsize=28:"
+                    f"x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10"
+                ),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-t",
+                str(duration),
+                video_path,
+            ]
+        else:
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-stream_loop",
+                "-1",
+                "-i",
+                bg_path,
+                "-i",
+                audio_path,
+                "-vf",
+                (
+                    f"scale=1280:720:force_original_aspect_ratio=increase,"
+                    f"crop=1280:720,"
+                    f"drawtext=text='{clean_text}':fontcolor=white:fontsize=28:"
+                    f"x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10"
+                ),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-t",
+                str(duration),
+                video_path,
+            ]
     else:
         cmd = [
             ffmpeg_bin,
@@ -267,7 +306,6 @@ def run_story_generator():
         messagebox.showerror("Error", "Please enter story text first!")
         return
 
-    # Dedicated master storage path
     saved_master_path = os.path.join(SAVED_VIDEOS_FOLDER, output_name)
     segments_txt_path = os.path.join(BASE_DIR, "segments.txt")
     ffmpeg_bin = get_ffmpeg_path()
@@ -334,7 +372,7 @@ def run_story_generator():
                 text=True,
             )
 
-            # CLEANUP: Delete temporary segment mp4s and concat file
+            # Cleanup temporary segment mp4 files and concat list
             for f_path in generated_files:
                 if os.path.exists(f_path):
                     try:
@@ -349,7 +387,6 @@ def run_story_generator():
                     pass
 
             if os.path.exists(saved_master_path):
-                # SELF-FEEDING MECHANISM: Copy finished output into local_clips for auto-absorption
                 status_label.config(
                     text="Status: Absorbing master output into AI memory...",
                     fg="cyan",
@@ -395,7 +432,7 @@ root.configure(bg="#1e1e1e")
 
 tk.Label(
     root,
-    text="Nexus Closed-Loop Visual AI Generator",
+    text="Nexus Multi-Format Visual AI Generator",
     font=("Arial", 16, "bold"),
     fg="white",
     bg="#1e1e1e",
