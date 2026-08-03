@@ -21,13 +21,18 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CLIPS_FOLDER = os.path.join(BASE_DIR, "local_clips")
+SAVED_VIDEOS_FOLDER = os.path.join(BASE_DIR, "my_saved_videos")
 MEMORY_FILE = os.path.join(BASE_DIR, "clip_memory.json")
 
+# Ensure required directories exist
 os.makedirs(CLIPS_FOLDER, exist_ok=True)
+os.makedirs(SAVED_VIDEOS_FOLDER, exist_ok=True)
 
+# Device Configuration
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[*] Visual Memory Core Active on: {device.upper()}")
 
+# Load CLIP Model
 MODEL_NAME = "openai/clip-vit-base-patch32"
 clip_model = CLIPModel.from_pretrained(MODEL_NAME).to(device)
 clip_processor = CLIPProcessor.from_pretrained(MODEL_NAME)
@@ -90,11 +95,13 @@ def extract_keyframe(video_path, ffmpeg_bin):
 
 
 def absorb_video(video_path):
+    """Processes a video into vector embeddings and saves to clip_memory.json."""
     file_name = os.path.basename(video_path)
     if file_name in visual_memory:
         return
 
     ffmpeg_bin = get_ffmpeg_path()
+    thumb_path = None
     try:
         thumb_path = extract_keyframe(video_path, ffmpeg_bin)
         if os.path.exists(thumb_path):
@@ -113,10 +120,16 @@ def absorb_video(video_path):
                 "vector": image_features.cpu().numpy().tolist()[0],
             }
             save_memory()
-            os.remove(thumb_path)
             print(f"[+] Absorbed visual memory: {file_name}")
     except Exception as e:
         print(f"[!] Error absorbing {file_name}: {e}")
+    finally:
+        # Cleanup temporary thumbnail
+        if thumb_path and os.path.exists(thumb_path):
+            try:
+                os.remove(thumb_path)
+            except Exception:
+                pass
 
 
 def scan_and_absorb_all():
@@ -254,19 +267,20 @@ def run_story_generator():
         messagebox.showerror("Error", "Please enter story text first!")
         return
 
-    output_path = os.path.join(BASE_DIR, output_name)
+    # Dedicated master storage path
+    saved_master_path = os.path.join(SAVED_VIDEOS_FOLDER, output_name)
     segments_txt_path = os.path.join(BASE_DIR, "segments.txt")
     ffmpeg_bin = get_ffmpeg_path()
 
     status_label.config(
-        text="Status: Querying Visual Neural Memory...", fg="yellow"
+        text="Status: Consulting Visual Memory Core...", fg="yellow"
     )
     btn.config(state="disabled")
 
     def worker():
         try:
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            if os.path.exists(saved_master_path):
+                os.remove(saved_master_path)
 
             sentences = [
                 s.strip()
@@ -279,7 +293,7 @@ def run_story_generator():
 
             for i, sentence in enumerate(sentences, start=1):
                 status_label.config(
-                    text=f"Status: Matching scene {i}/{total} from memory...",
+                    text=f"Status: Matching scene {i}/{total} from learned memory...",
                     fg="yellow",
                 )
                 segment_file = create_narrated_scene(sentence, i, ffmpeg_bin)
@@ -290,7 +304,7 @@ def run_story_generator():
                     f.write(f"file '{file}'\n")
 
             status_label.config(
-                text="Status: Stitching final master video...", fg="yellow"
+                text="Status: Stitching final master output...", fg="yellow"
             )
 
             cmd = [
@@ -308,7 +322,7 @@ def run_story_generator():
                 "yuv420p",
                 "-c:a",
                 "aac",
-                output_path,
+                saved_master_path,
             ]
 
             subprocess.run(
@@ -320,6 +334,7 @@ def run_story_generator():
                 text=True,
             )
 
+            # CLEANUP: Delete temporary segment mp4s and concat file
             for f_path in generated_files:
                 if os.path.exists(f_path):
                     try:
@@ -327,28 +342,36 @@ def run_story_generator():
                     except Exception:
                         pass
 
-            if os.path.exists(output_path):
+            if os.path.exists(segments_txt_path):
+                try:
+                    os.remove(segments_txt_path)
+                except Exception:
+                    pass
+
+            if os.path.exists(saved_master_path):
+                # SELF-FEEDING MECHANISM: Copy finished output into local_clips for auto-absorption
                 status_label.config(
-                    text="Status: Re-absorbing output into memory...", fg="cyan"
+                    text="Status: Absorbing master output into AI memory...",
+                    fg="cyan",
                 )
                 auto_clip_name = f"auto_generated_{int(time.time())}.mp4"
                 rebound_path = os.path.join(CLIPS_FOLDER, auto_clip_name)
-                shutil.copy(output_path, rebound_path)
+                shutil.copy(saved_master_path, rebound_path)
 
                 absorb_video(rebound_path)
 
                 status_label.config(
-                    text="Status: AI Generation & Self-Learning Complete!",
+                    text="Status: Process Complete & Temporary Files Cleaned!",
                     fg="lime",
                 )
                 messagebox.showinfo(
                     "Success",
-                    f"Video output created and self-absorbed into memory:\n{output_path}",
+                    f"Saved Video: {saved_master_path}\n\nAll temporary learning files removed.",
                 )
             else:
                 status_label.config(text="Status: Build Failed", fg="red")
                 messagebox.showerror(
-                    "Error", "Output video was not generated."
+                    "Error", "Master output video was not created."
                 )
 
         except Exception as e:
@@ -360,9 +383,11 @@ def run_story_generator():
     threading.Thread(target=worker, daemon=True).start()
 
 
+# Startup Routine
 scan_and_absorb_all()
 start_folder_watcher()
 
+# GUI Construction
 root = tk.Tk()
 root.title("Nexus Self-Feeding Visual AI Engine")
 root.geometry("580x500")
@@ -380,7 +405,7 @@ story_entry = tk.Text(root, font=("Arial", 10), height=10, width=65)
 story_entry.pack(padx=20, pady=5)
 story_entry.insert(
     "1.0",
-    "Enter story script here. Completed video renders are automatically fed back into local_clips and learned into visual memory.",
+    "Enter story script here. Master outputs are saved to my_saved_videos/ and automatically absorbed into local_clips/ memory.",
 )
 
 frame_out = tk.Frame(root, bg="#1e1e1e")
@@ -395,7 +420,7 @@ tk.Label(
 ).pack(anchor="w")
 
 output_entry = tk.Entry(frame_out, font=("Arial", 10), width=60)
-output_entry.insert(0, "ai_learned_output.mp4")
+output_entry.insert(0, "master_story_output.mp4")
 output_entry.pack(pady=5)
 
 status_label = tk.Label(
@@ -409,7 +434,7 @@ status_label.pack(pady=10)
 
 btn = tk.Button(
     root,
-    text="Generate & Learn Video",
+    text="Generate & Absorb Video",
     font=("Arial", 12, "bold"),
     bg="#007acc",
     fg="white",
