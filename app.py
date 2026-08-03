@@ -20,12 +20,10 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Dual-Output Directories
 CLIPS_FOLDER = os.path.join(BASE_DIR, "local_clips")
 SAVED_VIDEOS_FOLDER = os.path.join(BASE_DIR, "my_saved_videos")
 MEMORY_FILE = os.path.join(BASE_DIR, "clip_memory.json")
 
-# Ensure required directories exist
 os.makedirs(CLIPS_FOLDER, exist_ok=True)
 os.makedirs(SAVED_VIDEOS_FOLDER, exist_ok=True)
 
@@ -417,7 +415,6 @@ def run_story_generator():
     threading.Thread(target=worker, daemon=True).start()
 
 
-# Run initial directory scan and folder watcher in background threads
 threading.Thread(target=scan_and_absorb_all, daemon=True).start()
 start_folder_watcher()
 
@@ -428,4 +425,53 @@ root.configure(bg="#1e1e1e")
 
 tk.Label(
     root,
-    text
+    text="Nexus Dual-Output Visual AI Generator",
+    font=("Arial", 16, "bold"),
+    fg="white",
+    bg="#1e1e1e",
+).pack(pady=10)
+
+story_entry = tk.Text(root, font=("Arial", 10), height=10, width=65)
+story_entry.pack(padx=20, pady=5)
+story_entry.insert(
+    "1.0",
+    "Enter story script here. Final outputs are archived in my_saved_videos/ and duplicated into local_clips/ for AI self-learning.",
+)
+
+frame_out = tk.Frame(root, bg="#1e1e1e")
+frame_out.pack(fill="x", padx=20, pady=5)
+
+tk.Label(
+    frame_out,
+    text="Output File Name:",
+    font=("Arial", 10),
+    fg="white",
+    bg="#1e1e1e",
+).pack(anchor="w")
+
+output_entry = tk.Entry(frame_out, font=("Arial", 10), width=60)
+output_entry.insert(0, "record_master_output.mp4")
+output_entry.pack(pady=5)
+
+status_label = tk.Label(
+    root,
+    text="Status: Dual-Output System Active & Learning...",
+    font=("Arial", 10, "italic"),
+    fg="lime",
+    bg="#1e1e1e",
+)
+status_label.pack(pady=10)
+
+btn = tk.Button(
+    root,
+    text="Generate & Archive Video",
+    font=("Arial", 12, "bold"),
+    bg="#007acc",
+    fg="white",
+    padx=20,
+    pady=10,
+    command=run_story_generator,
+)
+btn.pack(pady=10)
+
+root.mainloop()
