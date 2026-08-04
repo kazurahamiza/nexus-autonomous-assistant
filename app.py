@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import datetime
 import edge_tts
+import yt_dlp
 import gradio as gr
 import PIL.Image
 from PIL import ImageFilter
@@ -68,6 +69,54 @@ def get_registered_videos():
     rows = cursor.fetchall()
     conn.close()
     return [f"[{r[0]}] {r[1]} | {r[2]} | {r[3]:.1f}s -> {r[4]}" for r in rows]
+
+# ==============================================================================
+# UNIVERSAL GLOBAL DOWNLOADER ENGINE
+# ==============================================================================
+
+def download_global_video(url: str, output_dir: str = "./outputs"):
+    """Downloads video/audio content from virtually any global web URL using yt-dlp."""
+    if not url or not url.strip():
+        return None, "⚠️ Error: Please enter a valid URL."
+    
+    abs_output_dir = os.path.abspath(output_dir)
+    os.makedirs(abs_output_dir, exist_ok=True)
+    
+    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_template = os.path.join(abs_output_dir, f"download_{timestamp_str}_%(title).50s.%(ext)s")
+
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': out_template,
+        'merge_output_format': 'mp4',
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
+        'quiet': False,
+        'no_warnings': True,
+    }
+
+    try:
+        print(f"[DOWNLOADER] Initializing universal extraction for: {url}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            
+            # Ensure extension reflects mp4 conversion
+            base_path, _ = os.path.splitext(filename)
+            final_mp4 = f"{base_path}.mp4"
+            
+            target_file = final_mp4 if os.path.exists(final_mp4) else filename
+            
+            # Register in DB as downloaded content
+            register_render("Global Download", "External Web Video", f"URL: {url}", 0.0, target_file)
+            
+            print(f"[DOWNLOADER] Successfully saved to: {target_file}")
+            return target_file, f"✅ Download Complete: Saved to outputs/"
+    except Exception as e:
+        print(f"[DOWNLOADER ERROR] {e}")
+        return None, f"❌ Download Failed: {str(e)}"
 
 # ==============================================================================
 # CATEGORY PRESET ENGINE
@@ -216,7 +265,7 @@ class ApexRenderEngine:
             '-i', audio_path,
             '-c:v', 'libx264',
             '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',  # Enables fast web parsing & thumbnail generation in TikTok Studio
+            '-movflags', '+faststart',
             '-c:a', 'aac',
             '-shortest',
             final_web_path
@@ -254,8 +303,8 @@ default_neg_prompt = (
     "shaky camera, static frame, cropped, low quality, worst quality"
 )
 
-with gr.Blocks(title="Apex AI Video Studio") as demo:
-    gr.Markdown("# 🎬 Apex AI Video Studio")
+with gr.Blocks(title="Apex AI Studio & Global Downloader") as demo:
+    gr.Markdown("# 🎬 Apex AI Studio & Universal Downloader")
     
     with gr.Tabs():
         with gr.Tab("Studio Generator"):
@@ -288,11 +337,28 @@ with gr.Blocks(title="Apex AI Video Studio") as demo:
                 with gr.Column():
                     video_output = gr.Video(label="Rendered Video Output")
 
+        with gr.Tab("📥 Global Video Downloader"):
+            gr.Markdown("### Universal Web Video Extraction Engine")
+            gr.Markdown("Paste any video URL from TikTok, YouTube, Twitter/X, Instagram, Facebook, Bilibili, Vimeo, etc.")
+            
+            with gr.Row():
+                with gr.Column():
+                    download_url_input = gr.Textbox(
+                        label="Target Video URL",
+                        placeholder="https://www.tiktok.com/@username/video/123456789 or https://youtube.com/watch?v=...",
+                        lines=2
+                    )
+                    download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
+                    status_output = gr.Textbox(label="Engine Status", interactive=False)
+                
+                with gr.Column():
+                    downloaded_video_output = gr.Video(label="Downloaded Video Preview")
+
         with gr.Tab("Master Video Vault"):
-            gr.Markdown("### 📜 Master Render Registry")
+            gr.Markdown("### 📜 Master Render & Download Registry")
             registry_list = gr.Dropdown(
                 choices=get_registered_videos(),
-                label="Saved Video Archives"
+                label="Saved Archives"
             )
             refresh_btn = gr.Button("🔄 Refresh Database Log")
 
@@ -300,6 +366,12 @@ with gr.Blocks(title="Apex AI Video Studio") as demo:
         fn=run_pipeline,
         inputs=[category_select, prompt_input, neg_prompt_input, dialogue_input, seed_input],
         outputs=[video_output, registry_list]
+    )
+
+    download_btn.click(
+        fn=download_global_video,
+        inputs=[download_url_input],
+        outputs=[downloaded_video_output, status_output]
     )
 
     refresh_btn.click(
@@ -310,12 +382,6 @@ with gr.Blocks(title="Apex AI Video Studio") as demo:
 if __name__ == "__main__":
     output_abs = os.path.abspath("./outputs")
     os.makedirs(output_abs, exist_ok=True)
-    
-    # Ensure audio length calculation module is installed
-    try:
-        import mutagen
-    except ImportError:
-        subprocess.run([sys.executable, "-m", "pip", "install", "mutagen"], check=True)
 
     demo.queue().launch(
         inbrowser=True,
