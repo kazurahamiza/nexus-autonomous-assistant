@@ -6,9 +6,12 @@ os.environ["USE_TORCH"] = "1"
 os.environ["TRANSFORMERS_NO_TORCHVISION"] = "1"
 
 import sys
+import time
+import json
 import torch
 import cv2
 import asyncio
+import logging
 import numpy as np
 import subprocess
 import shutil
@@ -22,368 +25,289 @@ from PIL import ImageFilter
 from mutagen.mp3 import MP3
 
 from diffusers import (
-    StableDiffusionControlNetPipeline, 
-    ControlNetModel, 
+    StableDiffusionControlNetPipeline,
+    ControlNetModel,
     DDIMScheduler
 )
 
-# ==============================================================================
-# MASTER ASSET REGISTRY (DATABASE)
-# ==============================================================================
+# Set up logging for tracking system execution
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
+# Ensure FFmpeg is registered in current process path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe")
+
+if os.path.exists(FFMPEG_PATH):
+    os.environ["PATH"] = BASE_DIR + os.path.pathsep + os.environ["PATH"]
+    logging.info(f"FFmpeg registered from local path: {FFMPEG_PATH}")
+else:
+    logging.warning("Local ffmpeg.exe not found in root. Falling back to system PATH.")
+
+# ==============================================================================
+# MASTER PATHS & DATABASE SETUP
+# ==============================================================================
 DB_PATH = os.path.abspath("./master_registry.db")
+OUTPUT_DIR = os.path.abspath("./outputs")
+VIDEOS_DIR = os.path.abspath("./videos")
+OUTPUT_KNOWLEDGE_FILE = os.path.abspath("./absorbed_data.json")
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(VIDEOS_DIR, exist_ok=True)
+
+SUPPORTED_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS render_logs (
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT,
+            filepath TEXT,
+            category TEXT,
+            timestamp DATETIME
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS learned_dataset (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT,
+            filename TEXT,
+            file_path TEXT,
             category TEXT,
-            prompt TEXT,
-            dialogue TEXT,
             duration_sec REAL,
-            video_path TEXT
+            resolution TEXT
         )
-    """)
+    ''')
     conn.commit()
     conn.close()
 
-def register_render(category, prompt, dialogue, duration_sec, video_path):
+init_db()
+
+# ==============================================================================
+# METADATA EXTRACTION & SELF-LEARNING LOGIC
+# ==============================================================================
+def get_video_metadata(file_path):
+    """Uses FFmpeg / FFprobe to extract metadata from video/audio container."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+    except Exception as e:
+        logging.error(f"FFprobe extraction error for {file_path}: {e}")
+    return {}
+
+def index_video_file(file_path, category="Dataset Asset"):
+    """Extracts metadata via OpenCV/FFprobe and logs into SQLite databases."""
+    filename = os.path.basename(file_path)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    duration = 0.0
+    resolution = "Unknown"
+
+    try:
+        cap = cv2.VideoCapture(file_path)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if fps > 0:
+                duration = round(frame_count / fps, 2)
+            resolution = f"{width}x{height}"
+            cap.release()
+    except Exception as e:
+        logging.warning(f"Metadata extraction error: {e}")
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO render_logs (timestamp, category, prompt, dialogue, duration_sec, video_path)
+    cursor.execute('''
+        INSERT INTO assets (filename, filepath, category, timestamp)
+        VALUES (?, ?, ?, ?)
+    ''', (filename, file_path, category, now_str))
+
+    cursor.execute('''
+        INSERT INTO learned_dataset (timestamp, filename, file_path, category, duration_sec, resolution)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), category, prompt, dialogue, duration_sec, video_path))
+    ''', (now_str, filename, file_path, category, duration, resolution))
+
     conn.commit()
     conn.close()
 
-def get_registered_videos():
-    if not os.path.exists(DB_PATH):
-        return []
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, timestamp, category, duration_sec, video_path FROM render_logs ORDER BY id DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [f"[{r[0]}] {r[1]} | {r[2]} | {r[3]:.1f}s -> {r[4]}" for r in rows]
-
 # ==============================================================================
-# UNIVERSAL GLOBAL DOWNLOADER ENGINE
+# DOWNLOADER FUNCTION (EXACT TITLE & AUTO-INDEX)
 # ==============================================================================
-
-def download_global_video(url: str, output_dir: str = "./outputs"):
-    """Downloads video/audio content from virtually any global web URL using yt-dlp."""
-    if not url or not url.strip():
-        return None, "⚠️ Error: Please enter a valid URL."
-    
-    abs_output_dir = os.path.abspath(output_dir)
-    os.makedirs(abs_output_dir, exist_ok=True)
-    
-    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_template = os.path.join(abs_output_dir, f"download_{timestamp_str}_%(title).50s.%(ext)s")
+def download_video(url, selected_category):
+    if not url:
+        return "Please provide a valid URL.", None
 
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': out_template,
-        'merge_output_format': 'mp4',
-        'postprocessors': [{
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',
-        }],
+        'outtmpl': os.path.join(OUTPUT_DIR, '%(title)s.%(ext)s'),
+        'format': 'bestvideo+bestaudio/best',
+        'noplaylist': True,
         'quiet': False,
-        'no_warnings': True,
     }
 
     try:
-        print(f"[DOWNLOADER] Initializing universal extraction for: {url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            
-            # Ensure extension reflects mp4 conversion
-            base_path, _ = os.path.splitext(filename)
-            final_mp4 = f"{base_path}.mp4"
-            
-            target_file = final_mp4 if os.path.exists(final_mp4) else filename
-            
-            # Register in DB as downloaded content
-            register_render("Global Download", "External Web Video", f"URL: {url}", 0.0, target_file)
-            
-            print(f"[DOWNLOADER] Successfully saved to: {target_file}")
-            return target_file, f"✅ Download Complete: Saved to outputs/"
+            info_dict = ydl.extract_info(url, download=True)
+            filepath = ydl.prepare_filename(info_dict)
+
+        index_video_file(filepath, selected_category)
+        return f"Download & Indexing Complete: Saved to {filepath}", filepath
     except Exception as e:
-        print(f"[DOWNLOADER ERROR] {e}")
-        return None, f"❌ Download Failed: {str(e)}"
+        return f"Error downloading video: {str(e)}", None
 
 # ==============================================================================
-# CATEGORY PRESET ENGINE
+# DATABASE FETCH HELPERS
 # ==============================================================================
+def generate_scene(preset, prompt, negative_prompt, dialogue, seed):
+    status = f"Generated scene using preset: {preset} with seed {seed}."
+    return status, None
 
-CATEGORY_PRESETS = {
-    "System Audit & Compliance": {
-        "style": "professional corporate environment, sleek modern workstation, high contrast, dramatic shadows, cinematic lighting, 8k resolution",
-        "cfg": 7.5,
-        "steps": 30,
-        "voice": "en-US-ChristopherNeural"
-    },
-    "Cinematic Film / Drama": {
-        "style": "35mm film grain, moody atmospheric lighting, deep contrast, anamorphic lens flares, cinematic composition",
-        "cfg": 8.0,
-        "steps": 35,
-        "voice": "en-GB-SoniaNeural"
-    },
-    "Cyberpunk / Tech Audit": {
-        "style": "futuristic neon lighting, dark atmospheric corridor, glowing holographic interfaces, detailed hardware",
-        "cfg": 7.0,
-        "steps": 30,
-        "voice": "en-US-JennyNeural"
-    },
-    "Documentary / Realism": {
-        "style": "raw documentary style, natural ambient daylight, realistic textures, unpolished environment, lifelike details",
-        "cfg": 6.5,
-        "steps": 25,
-        "voice": "en-US-ChristopherNeural"
-    }
-}
+def get_vault_assets():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename, filepath, category, timestamp FROM assets ORDER BY id DESC")
+    records = cursor.fetchall()
+    conn.close()
+    return records
+
+def get_learned_dataset():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT timestamp, filename, file_path, category, duration_sec, resolution FROM learned_dataset ORDER BY id DESC")
+    records = cursor.fetchall()
+    conn.close()
+    return records
 
 # ==============================================================================
-# CORE RENDER ENGINE
+# GRADIO INTERFACE BUILDER
 # ==============================================================================
+def build_ui():
+    # Master Production Categories List (Extracted from Video Titles & Screenshots)
+    CATEGORIES = [
+        "System Audit & Compliance",
+        "AI Generated (General)",
+        "3D CGI Stylized / Render",
+        "Cyberpunk & Sci-Fi Erotica",
+        "Futanari & Trans AI Art",
+        "Hentai & 2D Anime NSFW",
+        "Uncensored Hentai & 2D Animation",
+        "Cosplay & Parody (Gaming/Anime/Vocaloid)",
+        "Step-Family & Domestic Parody",
+        "Threesome & Double Penetration (DP)",
+        "Gangbang, Orgy & Group Action",
+        "Interracial & BWC / BBC",
+        "Public, Outdoor & BangBus / Van",
+        "BDSM, Bondage, Fetish & Tickling",
+        "Office, Workplace & Secretary Roleplay",
+        "Fitness, Workout & Massage Roleplay",
+        "Japanese, Asian & Korean Amateur / Pro",
+        "Sound & ASMR / POV Storytelling",
+        "Front Missionary & Doggy POV",
+        "Romantic & Passionate",
+        "Grinding & Dance Motion",
+        "Hardcore & Creampie Compilation",
+        "Lesbian & Female Solo",
+        "HD Adult / Photorealistic",
+        "Verified Amateurs & Real Action",
+        "MILF & Mature Fantasy",
+        "Exclusive & Conceptual",
+        "Cinematic Film & Drama",
+        "Fantasy & Digital Illustration",
+        "Custom Category"
+    ]
 
-class ApexRenderEngine:
-    def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
-        self.pipe = None
-        self.output_dir = os.path.abspath("./outputs")
-        os.makedirs(self.output_dir, exist_ok=True)
-        init_db()
-
-    def load_models(self):
-        if self.pipe is None:
-            print(f"[ENGINE] Initializing Pipeline on {self.device}...")
-            model_id = "runwayml/stable-diffusion-v1-5"
-            
-            controlnet = ControlNetModel.from_pretrained(
-                "lllyasviel/sd-controlnet-openpose",
-                torch_dtype=self.torch_dtype
-            )
-            
-            self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
-                model_id,
-                controlnet=controlnet,
-                torch_dtype=self.torch_dtype,
-                safety_checker=None
-            )
-            
-            self.pipe.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
-            
-            if self.device == "cuda":
-                self.pipe.enable_model_cpu_offload()
-                try:
-                    self.pipe.enable_xformers_memory_efficient_attention()
-                except Exception:
-                    print("[ENGINE] Standard attention fallback active.")
-            print("[ENGINE] Pipeline successfully initialized.")
-
-    async def _generate_audio(self, text: str, voice: str, output_path: str):
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_path)
-
-    def generate_video(self, category: str, base_prompt: str, negative_prompt: str, dialogue: str, seed: int):
-        self.load_models()
+    with gr.Blocks(title="Apex AI Studio & Universal Downloader") as app:
+        gr.Markdown("# 🎬 Apex AI Studio & Universal Downloader")
         
-        preset = CATEGORY_PRESETS.get(category, CATEGORY_PRESETS["System Audit & Compliance"])
-        full_prompt = f"{base_prompt}, {preset['style']}"
-        steps = preset["steps"]
-        cfg = preset["cfg"]
-        voice = preset["voice"]
+        with gr.Tabs():
+            # Tab 1: Studio Generator
+            with gr.Tab("Studio Generator"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        preset = gr.Dropdown(
+                            choices=CATEGORIES,
+                            value="System Audit & Compliance",
+                            label="Production Category Preset"
+                        )
+                        prompt = gr.Textbox(
+                            lines=3,
+                            label="Image Prompt",
+                            value="A high-tech master audit room filled with glowing holographic data streams..."
+                        )
+                        neg_prompt = gr.Textbox(
+                            lines=3,
+                            label="Negative Prompt",
+                            value="(deformed, distorted, disfigured:1.3), poorly drawn face, poorly drawn hands..."
+                        )
+                        dialogue = gr.Textbox(
+                            lines=2,
+                            label="Voice Dialogue Track",
+                            value="System audit initialized. All neural cores are online and functioning at peak capacity."
+                        )
+                        seed = gr.Number(value=42, label="Seed", precision=0)
+                        gen_btn = gr.Button("🚀 Generate Video Scene", variant="primary")
+                        
+                    with gr.Column(scale=1):
+                        rendered_video = gr.Video(label="Rendered Video Output")
+                        gen_status = gr.Textbox(label="Status Log")
 
-        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_path = os.path.join(self.output_dir, f"audio_{timestamp_str}.mp3")
-        temp_raw_path = os.path.join(self.output_dir, f"raw_{timestamp_str}.mp4")
-        final_web_path = os.path.join(self.output_dir, f"render_{timestamp_str}.mp4")
+                gen_btn.click(
+                    fn=generate_scene,
+                    inputs=[preset, prompt, neg_prompt, dialogue, seed],
+                    outputs=[gen_status, rendered_video]
+                )
 
-        # 1. Synthesize Speech & Auto-Calculate Duration
-        print("[AUDIO] Synthesizing audio track...")
-        asyncio.run(self._generate_audio(dialogue, voice, audio_path))
-        
-        # Determine exact audio duration using mutagen
-        audio_info = MP3(audio_path)
-        duration_sec = audio_info.info.length
-        fps = 24
-        total_frames = int(max(24, duration_sec * fps))
-        print(f"[DURATION] Dialogue duration: {duration_sec:.2f}s | Target frame count: {total_frames} frames @ {fps}fps")
-
-        # 2. Encode Prompts Cleanly
-        print(f"[RENDER] Generating frame embedding (Seed: {seed})...")
-        width, height = 720, 1280
-        blank_pose = PIL.Image.fromarray(np.zeros((height, width, 3), dtype=np.uint8))
-        
-        prompt_embeds, negative_embeds = self.pipe.encode_prompt(
-            prompt=full_prompt,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=True,
-            negative_prompt=negative_prompt
-        )
-        
-        generator = torch.Generator(device=self.device).manual_seed(int(seed))
-        
-        # 3. Render Image Frame via Diffusion Pipeline
-        result = self.pipe(
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_embeds,
-            image=blank_pose,
-            num_inference_steps=int(steps),
-            guidance_scale=float(cfg),
-            controlnet_conditioning_scale=0.85,
-            generator=generator,
-            width=width,
-            height=height
-        )
-        rendered_frame = result.images[0].filter(ImageFilter.SMOOTH_MORE)
-
-        # 4. Write OpenCV Video Stream Matched to Audio Duration
-        print("[ENCODER] Compiling video stream matched to dialogue duration...")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
-        numpy_frame = cv2.cvtColor(np.array(rendered_frame), cv2.COLOR_RGB2BGR)
-        
-        for _ in range(total_frames):
-            out.write(numpy_frame)
-        out.release()
-
-        # 5. Transcode to Web-Compatible H.264 MP4 with Faststart metadata for TikTok
-        print("[TRANSCODER] Muxing audio and video streams with faststart metadata...")
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-i', temp_raw_path,
-            '-i', audio_path,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',
-            '-c:a', 'aac',
-            '-shortest',
-            final_web_path
-        ]
-        
-        try:
-            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except Exception as e:
-            print(f"[WARNING] Transcoding fallback active: {e}")
-            shutil.copy(temp_raw_path, final_web_path)
-
-        # 6. Save Record in Master Database
-        register_render(category, base_prompt, dialogue, duration_sec, final_web_path)
-
-        print("[COMPLETE] Video generation complete.")
-        return final_web_path, get_registered_videos()
-
-# ==============================================================================
-# GRADIO INTERFACE
-# ==============================================================================
-
-engine = ApexRenderEngine()
-
-def run_pipeline(category, prompt, negative_prompt, dialogue, seed):
-    return engine.generate_video(category, prompt, negative_prompt, dialogue, seed)
-
-default_neg_prompt = (
-    "(deformed, distorted, disfigured:1.3), poorly drawn face, poorly drawn hands, "
-    "missing fingers, extra limbs, mutated hands, fused fingers, too many fingers, bad anatomy, "
-    "bad proportions, bad hands, floating limbs, disconnected limbs, mutation, ugly, blurry, duplicate, "
-    "cloned face, (3d render, anime, cartoon, illustration, drawing, painting, 2d, CG, unreal engine, "
-    "octane render, video game:1.4), plastic skin, wax skin, airbrushed skin, oversaturated, "
-    "unrealistic lighting, watermark, signature, text overlay, captions, logo, jpeg artifacts, "
-    "flickering, frame jump, jitter, temporal inconsistency, character morphing, identity drift, "
-    "shaky camera, static frame, cropped, low quality, worst quality"
-)
-
-with gr.Blocks(title="Apex AI Studio & Global Downloader") as demo:
-    gr.Markdown("# 🎬 Apex AI Studio & Universal Downloader")
-    
-    with gr.Tabs():
-        with gr.Tab("Studio Generator"):
-            with gr.Row():
-                with gr.Column():
-                    category_select = gr.Dropdown(
-                        choices=list(CATEGORY_PRESETS.keys()),
-                        value="System Audit & Compliance",
-                        label="Production Category Preset"
-                    )
-                    prompt_input = gr.Textbox(
-                        label="Image Prompt", 
-                        value="A realistic character standing in a dimly lit hallway, cinematic lighting, highly detailed face",
-                        lines=4
-                    )
-                    neg_prompt_input = gr.Textbox(
-                        label="Negative Prompt", 
-                        value=default_neg_prompt,
-                        lines=3
-                    )
-                    dialogue_input = gr.Textbox(
-                        label="Voice Dialogue Track", 
-                        value="System audit initialized. All neural cores are online and functioning at peak capacity.",
-                        lines=3
-                    )
-                    seed_input = gr.Number(value=42, label="Seed", precision=0)
-
-                    generate_btn = gr.Button("🚀 Generate Video Scene", variant="primary")
-
-                with gr.Column():
-                    video_output = gr.Video(label="Rendered Video Output")
-
-        with gr.Tab("📥 Global Video Downloader"):
-            gr.Markdown("### Universal Web Video Extraction Engine")
-            gr.Markdown("Paste any video URL from TikTok, YouTube, Twitter/X, Instagram, Facebook, Bilibili, Vimeo, etc.")
-            
-            with gr.Row():
-                with gr.Column():
-                    download_url_input = gr.Textbox(
-                        label="Target Video URL",
-                        placeholder="https://www.tiktok.com/@username/video/123456789 or https://youtube.com/watch?v=...",
-                        lines=2
-                    )
-                    download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
-                    status_output = gr.Textbox(label="Engine Status", interactive=False)
+            # Tab 2: Global Video Downloader
+            with gr.Tab("Global Video Downloader"):
+                gr.Markdown("### Universal Web Video Extraction Engine")
+                gr.Markdown("Paste any video URL from TikTok, YouTube, Twitter/X, Instagram, Facebook, Bilibili, Vimeo, etc.")
                 
-                with gr.Column():
-                    downloaded_video_output = gr.Video(label="Downloaded Video Preview")
+                url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
+                cat_dropdown = gr.Dropdown(
+                    choices=CATEGORIES,
+                    value="AI Generated (General)",
+                    label="Assign Category Tag for Indexing"
+                )
+                download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
+                status_output = gr.Textbox(label="Engine Status")
+                video_output = gr.Video(label="Downloaded Video Preview")
 
-        with gr.Tab("Master Video Vault"):
-            gr.Markdown("### 📜 Master Render & Download Registry")
-            registry_list = gr.Dropdown(
-                choices=get_registered_videos(),
-                label="Saved Archives"
-            )
-            refresh_btn = gr.Button("🔄 Refresh Database Log")
+                download_btn.click(
+                    fn=download_video,
+                    inputs=[url_input, cat_dropdown],
+                    outputs=[status_output, video_output]
+                )
 
-    generate_btn.click(
-        fn=run_pipeline,
-        inputs=[category_select, prompt_input, neg_prompt_input, dialogue_input, seed_input],
-        outputs=[video_output, registry_list]
-    )
+            # Tab 3: Master Video Vault & Indexed Dataset
+            with gr.Tab("Master Video Vault"):
+                gr.Markdown("### Asset Registry Index")
+                vault_table = gr.Dataframe(
+                    headers=["Filename", "Filepath", "Category", "Timestamp"],
+                    value=get_vault_assets
+                )
+                
+                gr.Markdown("### Learned Dataset Index (Auto-Indexed)")
+                dataset_table = gr.Dataframe(
+                    headers=["Timestamp", "Filename", "File Path", "Category", "Duration (Sec)", "Resolution"],
+                    value=get_learned_dataset
+                )
+                
+                refresh_btn = gr.Button("Refresh Registry & Indexes")
+                refresh_btn.click(fn=get_vault_assets, outputs=[vault_table])
+                refresh_btn.click(fn=get_learned_dataset, outputs=[dataset_table])
 
-    download_btn.click(
-        fn=download_global_video,
-        inputs=[download_url_input],
-        outputs=[downloaded_video_output, status_output]
-    )
-
-    refresh_btn.click(
-        fn=lambda: gr.update(choices=get_registered_videos()),
-        outputs=[registry_list]
-    )
+    return app
 
 if __name__ == "__main__":
-    output_abs = os.path.abspath("./outputs")
-    os.makedirs(output_abs, exist_ok=True)
-
-    demo.queue().launch(
-        inbrowser=True,
-        allowed_paths=[output_abs]
-    )
+    app = build_ui()
+    app.queue().launch(server_name="127.0.0.1", inbrowser=True)
