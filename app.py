@@ -226,7 +226,6 @@ def scan_and_link_all_directories():
                     conn.close()
 
                     if not exists:
-                        # Auto translate title and detect category for local files
                         translated_name = translate_title_to_english(file)
                         cat_tag = auto_detect_category_from_title(translated_name)
                         index_video_file(full_path, category=cat_tag)
@@ -244,7 +243,7 @@ def download_video(url, selected_category, custom_tag=""):
     if not url:
         return "Please provide a valid URL.", None
 
-    download_target = TARGET_LEARNING_DIRS[0]  # Default to ./videos
+    download_target = TARGET_LEARNING_DIRS[0]
 
     ydl_opts = {
         'outtmpl': os.path.join(download_target, '%(title)s.%(ext)s'),
@@ -259,10 +258,8 @@ def download_video(url, selected_category, custom_tag=""):
             filepath = ydl.prepare_filename(info_dict)
             video_title = info_dict.get('title', '')
 
-        # Auto-translate title to English
         english_title = translate_title_to_english(video_title)
 
-        # Determine final category tag
         if custom_tag.strip():
             final_category = custom_tag.strip()
         elif selected_category and selected_category != "General AI Production":
@@ -291,7 +288,7 @@ def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, durati
     status = (
         f"Initialized sequence generation under category: '{active_category}'. "
         f"Target Runtime: {formatted_time} ({total_seconds} seconds). "
-        f"Seed: {seed}. Learning links active."
+        f"Seed: {seed}. Neural pipeline active."
     )
     return status, None
 
