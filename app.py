@@ -97,7 +97,7 @@ def init_db():
 init_db()
 
 # ==============================================================================
-# TRANSLATION & KEYWORD AUTO-CATEGORIZATION LOGIC
+# TRANSLATION & UNFILTERED KEYWORD AUTO-CATEGORIZATION
 # ==============================================================================
 def translate_title_to_english(title):
     """Translates foreign video titles (Japanese, Chinese, etc.) to English."""
@@ -109,20 +109,29 @@ def translate_title_to_english(title):
         return title
 
 def auto_detect_category_from_title(title):
-    """Scans video title for keywords and assigns matching category."""
+    """Scans video title for keywords and assigns matching category without restrictions."""
     title_lower = title.lower()
     
-    if any(k in title_lower for k in ["audit", "compliance", "system"]):
+    # Audit & Technical
+    if any(k in title_lower for k in ["audit", "compliance", "system", "report", "market"]):
         return "System Audit & Compliance"
-    elif any(k in title_lower for k in ["documentary", "history", "educational", "report"]):
+    # Documentary & Educational
+    elif any(k in title_lower for k in ["documentary", "history", "educational", "science", "tech"]):
         return "Documentary & Educational"
-    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal"]):
+    # 3D CGI & Animation
+    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal", "animation"]):
         return "3D Animation & CGI Render"
-    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration"]):
+    # 2D Anime, Hentai & Manga
+    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration", "cosplay", "uncensored", "無修正"]):
         return "2D Anime & Digital Art"
-    elif any(k in title_lower for k in ["asmr", "pov", "audio", "voiceover"]):
+    # Mature & Live Footage Keywords
+    elif any(k in title_lower for k in ["milf", "amateur", "pov", "anal", "creampie", "blowjob", "jav", "strip", "sexy", "adult", "babe", "girl"]):
+        return "General Adult / Mature Content"
+    # Audio & Storytelling
+    elif any(k in title_lower for k in ["asmr", "audio", "voiceover", "soundtrack"]):
         return "ASMR & Voiceover Storytelling"
-    elif any(k in title_lower for k in ["movie", "film", "cinematic", "trailer"]):
+    # Film & Drama
+    elif any(k in title_lower for k in ["movie", "film", "cinematic", "trailer", "drama"]):
         return "Cinematic Film & Drama"
     else:
         return "General AI Production"
@@ -149,7 +158,7 @@ def get_video_metadata(file_path):
     return {}
 
 def index_video_file(file_path, category="Learned Asset"):
-    """Extracts metadata, logs to SQLite databases, and updates absorbed_data.json."""
+    """Extracts metadata, logs to SQLite database, and appends to absorbed_data.json."""
     filename = os.path.basename(file_path)
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     duration = 0.0
@@ -185,7 +194,7 @@ def index_video_file(file_path, category="Learned Asset"):
     conn.commit()
     conn.close()
 
-    # 2. Duplicate to absorbed_data.json learning file
+    # 2. Duplicate record into absorbed_data.json
     json_data = []
     if os.path.exists(OUTPUT_KNOWLEDGE_FILE):
         try:
@@ -288,7 +297,7 @@ def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, durati
     status = (
         f"Initialized sequence generation under category: '{active_category}'. "
         f"Target Runtime: {formatted_time} ({total_seconds} seconds). "
-        f"Seed: {seed}. Neural pipeline active."
+        f"Seed: {seed}. Learning links active."
     )
     return status, None
 

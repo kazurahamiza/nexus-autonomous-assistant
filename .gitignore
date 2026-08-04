@@ -7,3 +7,5 @@ outputs/
 *.safetensors
 build/
 dist/
+videos/
+input_videos/

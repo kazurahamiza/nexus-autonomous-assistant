@@ -3,7 +3,6 @@ import subprocess
 import sys
 
 def run_command(cmd, check=True):
-    """Executes system commands with real-time output stream."""
     print(f"[*] Running: {cmd}")
     result = subprocess.run(cmd, shell=True)
     if check and result.returncode != 0:
@@ -11,10 +10,15 @@ def run_command(cmd, check=True):
         sys.exit(result.returncode)
 
 def main():
-    # 1. Install Windows-compatible runtime dependencies
+    # 1. Execute ComfyUI Brutal Engine Update
+    if os.path.exists("update_comfy.py"):
+        print("[*] Launching ComfyUI engine upgrade...")
+        run_command("python update_comfy.py", check=False)
+
+    # 2. Install Core System Requirements
     run_command("pip install pyinstaller psutil deep-translator yt-dlp gradio opencv-python diffusers")
 
-    # 2. Configure .gitignore to ensure heavy build folders are NOT pushed
+    # 3. Secure .gitignore to prevent Git large payload locks
     gitignore_path = ".gitignore"
     ignore_entries = [
         "build/\n", 
@@ -23,7 +27,10 @@ def main():
         "*.db\n", 
         "outputs/\n", 
         "videos/\n", 
-        "input_videos/\n"
+        "input_videos/\n",
+        "ComfyUI/output/\n",
+        "ComfyUI/input/\n",
+        "ComfyUI/models/\n"
     ]
 
     existing_content = ""
@@ -36,9 +43,9 @@ def main():
             if entry not in existing_content:
                 f.write(entry)
 
-    print("[+] .gitignore configured to keep repository payload clean.")
+    print("[+] .gitignore configured.")
 
-    # 3. Build standalone executable
+    # 4. Compile Standalone Application
     print("[*] Compiling app.py into ApexAIVideoStudio.exe...")
     pyinstaller_cmd = (
         "pyinstaller --noconfirm --onedir --console "
@@ -48,20 +55,18 @@ def main():
     )
     run_command(pyinstaller_cmd)
 
-    print("[+] Executable created at: dist\\ApexAIVideoStudio\\ApexAIVideoStudio.exe")
-
-    # 4. Git Stage, Commit, and Push Source Code
+    # 5. Commit and Push to Git Remote
     print("[*] Staging source code changes for Git...")
-    run_command("git add app.py build_and_push.py .gitignore")
+    run_command("git add app.py update_comfy.py build_and_push.py .gitignore")
     
-    commit_msg = f'"Auto-update pipeline & app.py build"'
+    commit_msg = '"Master system update & ComfyUI peak engine upgrade"'
     print(f"[*] Committing changes: {commit_msg}")
     run_command(f"git commit -m {commit_msg}", check=False)
 
     print("[*] Pushing source code to remote GitHub repository...")
     run_command("git push origin main")
 
-    print("[+] Source code successfully pushed to Git repository.")
+    print("[+] Master build, ComfyUI update, and Git push sequence complete.")
 
 if __name__ == "__main__":
     main()
