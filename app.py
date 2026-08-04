@@ -163,7 +163,7 @@ def download_video(url, selected_category, custom_tag=""):
             filepath = ydl.prepare_filename(info_dict)
 
         index_video_file(filepath, final_category)
-        return f"Download & Indexing Complete: Saved to {filepath} [Tag: {final_category}]", filepath
+        return f"Download & Indexing Complete: Saved to {filepath} [Index Tag: {final_category}]", filepath
     except Exception as e:
         return f"Error downloading video: {str(e)}", None
 
@@ -224,7 +224,9 @@ def build_ui():
         "Documentary & Educational",
         "Commercial & Product Showcase",
         "ASMR & Voiceover Storytelling",
-        "General Adult / Mature Content",
+        "General Mature / Uncensored Content",
+        "Amateur & Live Footage",
+        "Cosplay & Character Parody",
         "Custom Category"
     ]
 
@@ -242,8 +244,8 @@ def build_ui():
                             label="Production Category Preset"
                         )
                         custom_tag = gr.Textbox(
-                            label="Custom / Tag Identifier (Optional)",
-                            placeholder="Type custom category tag here if needed..."
+                            label="Custom Indexing Tag / Category Override",
+                            placeholder="Type any custom tag or category string here..."
                         )
                         prompt = gr.Textbox(
                             lines=3,
@@ -295,8 +297,8 @@ def build_ui():
                     label="Assign Category Tag for Indexing"
                 )
                 custom_download_tag = gr.Textbox(
-                    label="Custom Category Tag (Optional Override)",
-                    placeholder="Type custom category tag to override dropdown..."
+                    label="Custom Index Tag (Override)",
+                    placeholder="Type custom indexing tag to assign to downloaded file..."
                 )
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
                 status_output = gr.Textbox(label="Engine Status")
