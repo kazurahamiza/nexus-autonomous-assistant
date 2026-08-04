@@ -166,10 +166,21 @@ def download_video(url, selected_category):
         return f"Error downloading video: {str(e)}", None
 
 # ==============================================================================
-# DATABASE FETCH HELPERS
+# STUDIO GENERATOR LOGIC (SUPPORTS UP TO 24 HOURS / 86400 SECONDS)
 # ==============================================================================
-def generate_scene(preset, prompt, negative_prompt, dialogue, seed):
-    status = f"Generated scene using preset: {preset} with seed {seed}."
+def generate_scene(preset, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
+    total_seconds = (duration_hours * 3600) + (duration_minutes * 60)
+    if total_seconds < 60:
+        total_seconds = 60 # Minimum 1 minute setting
+    if total_seconds > 86400:
+        total_seconds = 86400 # Cap at 24 hours
+
+    formatted_time = str(datetime.timedelta(seconds=total_seconds))
+    status = (
+        f"Initialized sequence generation with preset: '{preset}'. "
+        f"Target Duration: {formatted_time} ({total_seconds} seconds). "
+        f"Seed: {seed}."
+    )
     return status, None
 
 def get_vault_assets():
@@ -192,37 +203,23 @@ def get_learned_dataset():
 # GRADIO INTERFACE BUILDER
 # ==============================================================================
 def build_ui():
-    # Master Production Categories List (Extracted from Video Titles & Screenshots)
     CATEGORIES = [
         "System Audit & Compliance",
-        "AI Generated (General)",
-        "3D CGI Stylized / Render",
-        "Cyberpunk & Sci-Fi Erotica",
-        "Futanari & Trans AI Art",
-        "Hentai & 2D Anime NSFW",
-        "Uncensored Hentai & 2D Animation",
-        "Cosplay & Parody (Gaming/Anime/Vocaloid)",
-        "Step-Family & Domestic Parody",
-        "Threesome & Double Penetration (DP)",
-        "Gangbang, Orgy & Group Action",
-        "Interracial & BWC / BBC",
-        "Public, Outdoor & BangBus / Van",
-        "BDSM, Bondage, Fetish & Tickling",
-        "Office, Workplace & Secretary Roleplay",
-        "Fitness, Workout & Massage Roleplay",
-        "Japanese, Asian & Korean Amateur / Pro",
-        "Sound & ASMR / POV Storytelling",
-        "Front Missionary & Doggy POV",
-        "Romantic & Passionate",
-        "Grinding & Dance Motion",
-        "Hardcore & Creampie Compilation",
-        "Lesbian & Female Solo",
-        "HD Adult / Photorealistic",
-        "Verified Amateurs & Real Action",
-        "MILF & Mature Fantasy",
-        "Exclusive & Conceptual",
+        "General AI Production",
+        "3D Animation & CGI Render",
+        "2D Anime & Digital Art",
+        "Photorealistic & Cinematic",
+        "Stylized Illustration & Concept Art",
         "Cinematic Film & Drama",
-        "Fantasy & Digital Illustration",
+        "Sci-Fi & Cyberpunk",
+        "Fantasy & Mythological",
+        "Action & VFX Motion",
+        "Documentary & Educational",
+        "Commercial & Product Showcase",
+        "ASMR & Voiceover Storytelling",
+        "General Adult / Mature Content",
+        "Portrait & Character Study",
+        "Landscape & Atmospheric Scene",
         "Custom Category"
     ]
 
@@ -254,6 +251,16 @@ def build_ui():
                             label="Voice Dialogue Track",
                             value="System audit initialized. All neural cores are online and functioning at peak capacity."
                         )
+                        
+                        gr.Markdown("### Video Target Runtime (1 Minute to 24 Hours)")
+                        with gr.Row():
+                            duration_hours = gr.Slider(
+                                minimum=0, maximum=24, value=0, step=1, label="Hours"
+                            )
+                            duration_minutes = gr.Slider(
+                                minimum=1, maximum=59, value=5, step=1, label="Minutes"
+                            )
+
                         seed = gr.Number(value=42, label="Seed", precision=0)
                         gen_btn = gr.Button("🚀 Generate Video Scene", variant="primary")
                         
@@ -263,7 +270,7 @@ def build_ui():
 
                 gen_btn.click(
                     fn=generate_scene,
-                    inputs=[preset, prompt, neg_prompt, dialogue, seed],
+                    inputs=[preset, prompt, neg_prompt, dialogue, duration_hours, duration_minutes, seed],
                     outputs=[gen_status, rendered_video]
                 )
 
@@ -275,7 +282,7 @@ def build_ui():
                 url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
                 cat_dropdown = gr.Dropdown(
                     choices=CATEGORIES,
-                    value="AI Generated (General)",
+                    value="General AI Production",
                     label="Assign Category Tag for Indexing"
                 )
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
