@@ -23,6 +23,7 @@ import gradio as gr
 import PIL.Image
 from PIL import ImageFilter
 from mutagen.mp3 import MP3
+from deep_translator import GoogleTranslator
 
 from diffusers import (
     StableDiffusionControlNetPipeline,
@@ -50,7 +51,7 @@ DB_PATH = os.path.abspath("./master_registry.db")
 OUTPUT_DIR = os.path.abspath("./outputs")
 OUTPUT_KNOWLEDGE_FILE = os.path.abspath("./absorbed_data.json")
 
-# Linked Local Learning Directories (Discovered from file explorer screenshots)
+# Linked Local Learning Directories
 TARGET_LEARNING_DIRS = [
     os.path.abspath("./videos"),
     os.path.abspath("./input_videos"),
@@ -94,6 +95,37 @@ def init_db():
     conn.close()
 
 init_db()
+
+# ==============================================================================
+# TRANSLATION & KEYWORD AUTO-CATEGORIZATION LOGIC
+# ==============================================================================
+def translate_title_to_english(title):
+    """Translates foreign video titles (Japanese, Chinese, etc.) to English."""
+    try:
+        translated = GoogleTranslator(source='auto', target='en').translate(title)
+        return translated if translated else title
+    except Exception as e:
+        logging.warning(f"Title translation fallback: {e}")
+        return title
+
+def auto_detect_category_from_title(title):
+    """Scans video title for keywords and assigns matching category."""
+    title_lower = title.lower()
+    
+    if any(k in title_lower for k in ["audit", "compliance", "system"]):
+        return "System Audit & Compliance"
+    elif any(k in title_lower for k in ["documentary", "history", "educational", "report"]):
+        return "Documentary & Educational"
+    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal"]):
+        return "3D Animation & CGI Render"
+    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration"]):
+        return "2D Anime & Digital Art"
+    elif any(k in title_lower for k in ["asmr", "pov", "audio", "voiceover"]):
+        return "ASMR & Voiceover Storytelling"
+    elif any(k in title_lower for k in ["movie", "film", "cinematic", "trailer"]):
+        return "Cinematic Film & Drama"
+    else:
+        return "General AI Production"
 
 # ==============================================================================
 # METADATA EXTRACTION & DUAL-FILE LEARNING INDEXER
@@ -177,7 +209,7 @@ def index_video_file(file_path, category="Learned Asset"):
         json.dump(json_data, f, indent=4, ensure_ascii=False)
 
 def scan_and_link_all_directories():
-    """Scans all linked folders (videos, input_videos, self_learning_brutal_ai) and indexes all unindexed media files."""
+    """Scans all linked folders (videos, input_videos, self_learning_brutal_ai) and indexes unindexed files."""
     total_indexed = 0
     for target_dir in TARGET_LEARNING_DIRS:
         if not os.path.exists(target_dir):
@@ -187,7 +219,6 @@ def scan_and_link_all_directories():
                 if file.lower().endswith(SUPPORTED_EXTENSIONS):
                     full_path = os.path.abspath(os.path.join(root, file))
                     
-                    # Check if file is already logged
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
                     cursor.execute("SELECT id FROM learned_dataset WHERE file_path = ?", (full_path,))
@@ -195,7 +226,9 @@ def scan_and_link_all_directories():
                     conn.close()
 
                     if not exists:
-                        cat_tag = f"Self-Learned ({os.path.basename(os.path.dirname(full_path))})"
+                        # Auto translate title and detect category for local files
+                        translated_name = translate_title_to_english(file)
+                        cat_tag = auto_detect_category_from_title(translated_name)
                         index_video_file(full_path, category=cat_tag)
                         total_indexed += 1
 
@@ -205,13 +238,12 @@ def scan_and_link_all_directories():
 scan_and_link_all_directories()
 
 # ==============================================================================
-# DOWNLOADER FUNCTION (EXACT WEB TITLE & AUTO-INDEX)
+# DOWNLOADER FUNCTION (AUTO TRANSLATE & AUTO-INDEX)
 # ==============================================================================
 def download_video(url, selected_category, custom_tag=""):
     if not url:
         return "Please provide a valid URL.", None
 
-    final_category = custom_tag.strip() if custom_tag.strip() else selected_category
     download_target = TARGET_LEARNING_DIRS[0]  # Default to ./videos
 
     ydl_opts = {
@@ -225,9 +257,21 @@ def download_video(url, selected_category, custom_tag=""):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
             filepath = ydl.prepare_filename(info_dict)
+            video_title = info_dict.get('title', '')
+
+        # Auto-translate title to English
+        english_title = translate_title_to_english(video_title)
+
+        # Determine final category tag
+        if custom_tag.strip():
+            final_category = custom_tag.strip()
+        elif selected_category and selected_category != "General AI Production":
+            final_category = selected_category
+        else:
+            final_category = auto_detect_category_from_title(english_title)
 
         index_video_file(filepath, final_category)
-        return f"Download & Sync Complete: Saved to {filepath} [Tag: {final_category}]", filepath
+        return f"Download, Translation & Auto-Indexing Complete: '{english_title}' [Tag: {final_category}]", filepath
     except Exception as e:
         return f"Error downloading video: {str(e)}", None
 
@@ -292,7 +336,7 @@ def build_ui():
         "Custom Category"
     ]
 
-    with gr.Blocks(title="Apex AI Studio & Universal Downloader") as app:
+    with gr.Blocks(title="Apex AI Studio & Linked Learning Engine") as app:
         gr.Markdown("# 🎬 Apex AI Studio & Linked Learning Engine")
         
         with gr.Tabs():
@@ -359,7 +403,7 @@ def build_ui():
                 )
                 custom_download_tag = gr.Textbox(
                     label="Custom Tag (Optional)",
-                    placeholder="Type custom category tag to override dropdown..."
+                    placeholder="Type custom category tag to override auto-tagging..."
                 )
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
                 status_output = gr.Textbox(label="Engine Status")
