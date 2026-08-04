@@ -44,18 +44,29 @@ else:
     logging.warning("Local ffmpeg.exe not found in root. Falling back to system PATH.")
 
 # ==============================================================================
-# MASTER PATHS & DATABASE SETUP
+# MASTER PATHS & MULTI-DIRECTORY LEARNING TARGETS
 # ==============================================================================
 DB_PATH = os.path.abspath("./master_registry.db")
 OUTPUT_DIR = os.path.abspath("./outputs")
-VIDEOS_DIR = os.path.abspath("./videos")
 OUTPUT_KNOWLEDGE_FILE = os.path.abspath("./absorbed_data.json")
 
+# Linked Local Learning Directories (Discovered from file explorer screenshots)
+TARGET_LEARNING_DIRS = [
+    os.path.abspath("./videos"),
+    os.path.abspath("./input_videos"),
+    os.path.abspath("./self_learning_brutal_ai/videos")
+]
+
+# Ensure all target folders exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(VIDEOS_DIR, exist_ok=True)
+for path in TARGET_LEARNING_DIRS:
+    os.makedirs(path, exist_ok=True)
 
 SUPPORTED_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
 
+# ==============================================================================
+# DATABASE SETUP
+# ==============================================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -85,10 +96,10 @@ def init_db():
 init_db()
 
 # ==============================================================================
-# METADATA EXTRACTION & SELF-LEARNING LOGIC
+# METADATA EXTRACTION & DUAL-FILE LEARNING INDEXER
 # ==============================================================================
 def get_video_metadata(file_path):
-    """Uses FFmpeg / FFprobe to extract metadata from video/audio container."""
+    """Extracts stream and container metadata using FFprobe."""
     try:
         cmd = [
             "ffprobe",
@@ -105,8 +116,8 @@ def get_video_metadata(file_path):
         logging.error(f"FFprobe extraction error for {file_path}: {e}")
     return {}
 
-def index_video_file(file_path, category="Dataset Asset"):
-    """Extracts metadata via OpenCV/FFprobe and logs into SQLite databases."""
+def index_video_file(file_path, category="Learned Asset"):
+    """Extracts metadata, logs to SQLite databases, and updates absorbed_data.json."""
     filename = os.path.basename(file_path)
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     duration = 0.0
@@ -126,6 +137,7 @@ def index_video_file(file_path, category="Dataset Asset"):
     except Exception as e:
         logging.warning(f"Metadata extraction error: {e}")
 
+    # 1. Save to SQLite DB
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -141,6 +153,57 @@ def index_video_file(file_path, category="Dataset Asset"):
     conn.commit()
     conn.close()
 
+    # 2. Duplicate to absorbed_data.json learning file
+    json_data = []
+    if os.path.exists(OUTPUT_KNOWLEDGE_FILE):
+        try:
+            with open(OUTPUT_KNOWLEDGE_FILE, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+        except Exception:
+            json_data = []
+
+    json_entry = {
+        "timestamp": now_str,
+        "filename": filename,
+        "file_path": file_path,
+        "category": category,
+        "duration_sec": duration,
+        "resolution": resolution,
+        "ffprobe_meta": get_video_metadata(file_path)
+    }
+    json_data.append(json_entry)
+
+    with open(OUTPUT_KNOWLEDGE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(json_data, f, indent=4, ensure_ascii=False)
+
+def scan_and_link_all_directories():
+    """Scans all linked folders (videos, input_videos, self_learning_brutal_ai) and indexes all unindexed media files."""
+    total_indexed = 0
+    for target_dir in TARGET_LEARNING_DIRS:
+        if not os.path.exists(target_dir):
+            continue
+        for root, _, files in os.walk(target_dir):
+            for file in files:
+                if file.lower().endswith(SUPPORTED_EXTENSIONS):
+                    full_path = os.path.abspath(os.path.join(root, file))
+                    
+                    # Check if file is already logged
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM learned_dataset WHERE file_path = ?", (full_path,))
+                    exists = cursor.fetchone()
+                    conn.close()
+
+                    if not exists:
+                        cat_tag = f"Self-Learned ({os.path.basename(os.path.dirname(full_path))})"
+                        index_video_file(full_path, category=cat_tag)
+                        total_indexed += 1
+
+    return f"Scan & Sync Complete: Indexed {total_indexed} new video assets into Database & absorbed_data.json."
+
+# Run initial directory linking scan on launch
+scan_and_link_all_directories()
+
 # ==============================================================================
 # DOWNLOADER FUNCTION (EXACT WEB TITLE & AUTO-INDEX)
 # ==============================================================================
@@ -149,9 +212,10 @@ def download_video(url, selected_category, custom_tag=""):
         return "Please provide a valid URL.", None
 
     final_category = custom_tag.strip() if custom_tag.strip() else selected_category
+    download_target = TARGET_LEARNING_DIRS[0]  # Default to ./videos
 
     ydl_opts = {
-        'outtmpl': os.path.join(OUTPUT_DIR, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(download_target, '%(title)s.%(ext)s'),
         'format': 'bestvideo+bestaudio/best',
         'noplaylist': True,
         'quiet': False,
@@ -163,7 +227,7 @@ def download_video(url, selected_category, custom_tag=""):
             filepath = ydl.prepare_filename(info_dict)
 
         index_video_file(filepath, final_category)
-        return f"Download & Indexing Complete: Saved to {filepath} [Index Tag: {final_category}]", filepath
+        return f"Download & Sync Complete: Saved to {filepath} [Tag: {final_category}]", filepath
     except Exception as e:
         return f"Error downloading video: {str(e)}", None
 
@@ -173,17 +237,17 @@ def download_video(url, selected_category, custom_tag=""):
 def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
     total_seconds = (duration_hours * 3600) + (duration_minutes * 60)
     if total_seconds < 60:
-        total_seconds = 60  # Minimum 1 minute
+        total_seconds = 60
     if total_seconds > 86400:
-        total_seconds = 86400  # Cap at 24 hours (86400 seconds)
+        total_seconds = 86400
 
     active_category = custom_tag.strip() if custom_tag.strip() else preset
     formatted_time = str(datetime.timedelta(seconds=total_seconds))
     
     status = (
-        f"Initialized video render profile under category: '{active_category}'. "
+        f"Initialized sequence generation under category: '{active_category}'. "
         f"Target Runtime: {formatted_time} ({total_seconds} seconds). "
-        f"Seed: {seed}. Neural pipeline ready."
+        f"Seed: {seed}. Learning links active."
     )
     return status, None
 
@@ -224,14 +288,12 @@ def build_ui():
         "Documentary & Educational",
         "Commercial & Product Showcase",
         "ASMR & Voiceover Storytelling",
-        "General Mature / Uncensored Content",
-        "Amateur & Live Footage",
-        "Cosplay & Character Parody",
+        "General Adult / Mature Content",
         "Custom Category"
     ]
 
     with gr.Blocks(title="Apex AI Studio & Universal Downloader") as app:
-        gr.Markdown("# 🎬 Apex AI Studio & Universal Downloader")
+        gr.Markdown("# 🎬 Apex AI Studio & Linked Learning Engine")
         
         with gr.Tabs():
             # Tab 1: Studio Generator
@@ -244,8 +306,8 @@ def build_ui():
                             label="Production Category Preset"
                         )
                         custom_tag = gr.Textbox(
-                            label="Custom Indexing Tag / Category Override",
-                            placeholder="Type any custom tag or category string here..."
+                            label="Custom Category / Tag Override",
+                            placeholder="Type custom tag or category string here..."
                         )
                         prompt = gr.Textbox(
                             lines=3,
@@ -288,7 +350,6 @@ def build_ui():
             # Tab 2: Global Video Downloader
             with gr.Tab("Global Video Downloader"):
                 gr.Markdown("### Universal Web Video Extraction Engine")
-                gr.Markdown("Paste any video URL to extract media and auto-index into local databases.")
                 
                 url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
                 cat_dropdown = gr.Dropdown(
@@ -297,8 +358,8 @@ def build_ui():
                     label="Assign Category Tag for Indexing"
                 )
                 custom_download_tag = gr.Textbox(
-                    label="Custom Index Tag (Override)",
-                    placeholder="Type custom indexing tag to assign to downloaded file..."
+                    label="Custom Tag (Optional)",
+                    placeholder="Type custom category tag to override dropdown..."
                 )
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
                 status_output = gr.Textbox(label="Engine Status")
@@ -310,8 +371,12 @@ def build_ui():
                     outputs=[status_output, video_output]
                 )
 
-            # Tab 3: Master Video Vault & Indexed Dataset
-            with gr.Tab("Master Video Vault"):
+            # Tab 3: Master Video Vault & Linked Learning Index
+            with gr.Tab("Master Video Vault & Learning Index"):
+                gr.Markdown("### Linked Folders Sync & Scan")
+                sync_btn = gr.Button("🔄 Scan & Sync All Local Video Folders (videos, input_videos, self_learning)", variant="secondary")
+                sync_log = gr.Textbox(label="Sync Status")
+
                 gr.Markdown("### Asset Registry Index")
                 vault_table = gr.Dataframe(
                     headers=["Filename", "Filepath", "Category", "Timestamp"],
@@ -324,9 +389,9 @@ def build_ui():
                     value=get_learned_dataset
                 )
                 
-                refresh_btn = gr.Button("Refresh Registry & Indexes")
-                refresh_btn.click(fn=get_vault_assets, outputs=[vault_table])
-                refresh_btn.click(fn=get_learned_dataset, outputs=[dataset_table])
+                sync_btn.click(fn=scan_and_link_all_directories, outputs=[sync_log])
+                sync_btn.click(fn=get_vault_assets, outputs=[vault_table])
+                sync_btn.click(fn=get_learned_dataset, outputs=[dataset_table])
 
     return app
 
