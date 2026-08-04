@@ -208,14 +208,15 @@ class ApexRenderEngine:
             out.write(numpy_frame)
         out.release()
 
-        # 5. Transcode to Web-Compatible H.264 MP4
-        print("[TRANSCODER] Muxing audio and video streams via FFmpeg...")
+        # 5. Transcode to Web-Compatible H.264 MP4 with Faststart metadata for TikTok
+        print("[TRANSCODER] Muxing audio and video streams with faststart metadata...")
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', temp_raw_path,
             '-i', audio_path,
             '-c:v', 'libx264',
             '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',  # Enables fast web parsing & thumbnail generation in TikTok Studio
             '-c:a', 'aac',
             '-shortest',
             final_web_path
