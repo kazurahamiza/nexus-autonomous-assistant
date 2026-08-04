@@ -142,11 +142,13 @@ def index_video_file(file_path, category="Dataset Asset"):
     conn.close()
 
 # ==============================================================================
-# DOWNLOADER FUNCTION (EXACT TITLE & AUTO-INDEX)
+# DOWNLOADER FUNCTION (EXACT WEB TITLE & AUTO-INDEX)
 # ==============================================================================
-def download_video(url, selected_category):
+def download_video(url, selected_category, custom_tag=""):
     if not url:
         return "Please provide a valid URL.", None
+
+    final_category = custom_tag.strip() if custom_tag.strip() else selected_category
 
     ydl_opts = {
         'outtmpl': os.path.join(OUTPUT_DIR, '%(title)s.%(ext)s'),
@@ -160,29 +162,34 @@ def download_video(url, selected_category):
             info_dict = ydl.extract_info(url, download=True)
             filepath = ydl.prepare_filename(info_dict)
 
-        index_video_file(filepath, selected_category)
-        return f"Download & Indexing Complete: Saved to {filepath}", filepath
+        index_video_file(filepath, final_category)
+        return f"Download & Indexing Complete: Saved to {filepath} [Tag: {final_category}]", filepath
     except Exception as e:
         return f"Error downloading video: {str(e)}", None
 
 # ==============================================================================
-# STUDIO GENERATOR LOGIC (SUPPORTS UP TO 24 HOURS / 86400 SECONDS)
+# STUDIO GENERATOR LOGIC (1 MINUTE TO 24 HOURS RUNTIME)
 # ==============================================================================
-def generate_scene(preset, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
+def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
     total_seconds = (duration_hours * 3600) + (duration_minutes * 60)
     if total_seconds < 60:
-        total_seconds = 60 # Minimum 1 minute setting
+        total_seconds = 60  # Minimum 1 minute
     if total_seconds > 86400:
-        total_seconds = 86400 # Cap at 24 hours
+        total_seconds = 86400  # Cap at 24 hours (86400 seconds)
 
+    active_category = custom_tag.strip() if custom_tag.strip() else preset
     formatted_time = str(datetime.timedelta(seconds=total_seconds))
+    
     status = (
-        f"Initialized sequence generation with preset: '{preset}'. "
-        f"Target Duration: {formatted_time} ({total_seconds} seconds). "
-        f"Seed: {seed}."
+        f"Initialized video render profile under category: '{active_category}'. "
+        f"Target Runtime: {formatted_time} ({total_seconds} seconds). "
+        f"Seed: {seed}. Neural pipeline ready."
     )
     return status, None
 
+# ==============================================================================
+# DATABASE FETCH HELPERS
+# ==============================================================================
 def get_vault_assets():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -218,8 +225,6 @@ def build_ui():
         "Commercial & Product Showcase",
         "ASMR & Voiceover Storytelling",
         "General Adult / Mature Content",
-        "Portrait & Character Study",
-        "Landscape & Atmospheric Scene",
         "Custom Category"
     ]
 
@@ -235,6 +240,10 @@ def build_ui():
                             choices=CATEGORIES,
                             value="System Audit & Compliance",
                             label="Production Category Preset"
+                        )
+                        custom_tag = gr.Textbox(
+                            label="Custom / Tag Identifier (Optional)",
+                            placeholder="Type custom category tag here if needed..."
                         )
                         prompt = gr.Textbox(
                             lines=3,
@@ -270,14 +279,14 @@ def build_ui():
 
                 gen_btn.click(
                     fn=generate_scene,
-                    inputs=[preset, prompt, neg_prompt, dialogue, duration_hours, duration_minutes, seed],
+                    inputs=[preset, custom_tag, prompt, neg_prompt, dialogue, duration_hours, duration_minutes, seed],
                     outputs=[gen_status, rendered_video]
                 )
 
             # Tab 2: Global Video Downloader
             with gr.Tab("Global Video Downloader"):
                 gr.Markdown("### Universal Web Video Extraction Engine")
-                gr.Markdown("Paste any video URL from TikTok, YouTube, Twitter/X, Instagram, Facebook, Bilibili, Vimeo, etc.")
+                gr.Markdown("Paste any video URL to extract media and auto-index into local databases.")
                 
                 url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
                 cat_dropdown = gr.Dropdown(
@@ -285,13 +294,17 @@ def build_ui():
                     value="General AI Production",
                     label="Assign Category Tag for Indexing"
                 )
+                custom_download_tag = gr.Textbox(
+                    label="Custom Category Tag (Optional Override)",
+                    placeholder="Type custom category tag to override dropdown..."
+                )
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
                 status_output = gr.Textbox(label="Engine Status")
                 video_output = gr.Video(label="Downloaded Video Preview")
 
                 download_btn.click(
                     fn=download_video,
-                    inputs=[url_input, cat_dropdown],
+                    inputs=[url_input, cat_dropdown, custom_download_tag],
                     outputs=[status_output, video_output]
                 )
 
