@@ -11,13 +11,23 @@ def run_command(cmd, check=True):
 
 def main():
     print("==================================================")
-    print("[*] MASTER PIPELINE BUILD & COMPLETE SUITE DEPLOYMENT")
+    print("[*] MASTER PIPELINE BUILD & ALL 5 TIERS DEPLOYMENT")
     print("==================================================")
 
     print("[*] Upgrading core Python packages...")
     run_command("pip install --upgrade pyinstaller psutil deep-translator yt-dlp gradio opencv-python diffusers edge-tts mutagen flask requests numpy")
 
     test_modules = [
+        ("financial_roi_engine.py", "python financial_roi_engine.py --test"),
+        ("multimodal_realtime_director.py", "python multimodal_realtime_director.py --test"),
+        ("vtuber_audience_engine.py", "python vtuber_audience_engine.py --test"),
+        ("self_evolving_code_engine.py", "python self_evolving_code_engine.py --test"),
+        ("swarm_mesh_node.py", "python swarm_mesh_node.py --test"),
+        ("mesh_model_cache_sync.py", "python mesh_model_cache_sync.py --test"),
+        ("master_pipeline_orchestrator.py", "python master_pipeline_orchestrator.py --test"),
+        ("contextual_broll_engine.py", "python contextual_broll_engine.py --test"),
+        ("jumpcut_remediation_engine.py", "python jumpcut_remediation_engine.py --test"),
+        ("aspect_ratio_reframer.py", "python aspect_ratio_reframer.py --test"),
         ("monetization_injection_engine.py", "python monetization_injection_engine.py --test"),
         ("face_body_swapper.py", "python face_body_swapper.py --test"),
         ("audio_stem_separator.py", "python audio_stem_separator.py --test"),
@@ -77,8 +87,8 @@ def main():
         "system_integrity_manifest.json\n", "ci_test_report.json\n",
         "compliance_audit_log.json\n", "watermark.png\n",
         "quality_inspection_log.json\n", "viral_trends_cache.json\n",
-        "auto_update_daemon.log\n", "database_backups/\n",
-        "self_learning_brutal_ai/dataset/\n",
+        "swarm_nodes.json\n", "auto_update_daemon.log\n",
+        "database_backups/\n", "self_learning_brutal_ai/dataset/\n",
         "self_learning_brutal_ai/optimized_rules.json\n",
         "ComfyUI/output/\n", "ComfyUI/input/\n", "ComfyUI/models/\n",
         "autostart_system.log\n"
@@ -104,16 +114,16 @@ def main():
     run_command(pyinstaller_cmd)
 
     print("[*] Staging source code for Git repository...")
-    run_command("git add app.py engine_coordinator.py multi_agent_pipeline.py model_and_workflow_manager.py system_self_healer.py dataset_auto_annotator.py distributed_task_queue.py motion_upscale_pipeline.py live_stream_ingest.py semantic_vector_search.py automated_video_editor.py social_auto_publisher.py ai_self_learning_loop.py mission_control_dashboard.py master_system_orchestrator.py distributed_cluster_node.py cyber_integrity_monitor.py database_ha_replicator.py cloud_webhook_gateway.py alert_notification_bot.py model_quantizer_profiler.py ci_system_diagnostics.py lora_auto_trainer.py copyright_compliance_auditor.py auto_caption_generator.py video_watermark_branding.py audio_atmosphere_synthesizer.py ab_thumbnail_generator.py visual_quality_inspector.py cinematic_color_grader.py multilingual_voice_cloner.py viral_trend_analyzer.py video_super_resolution_engine.py post_publish_analytics_collector.py gpu_load_balancer.py lip_sync_aligner.py dynamic_scene_transition.py social_schedule_manager.py cloud_storage_backup.py monetization_injection_engine.py face_body_swapper.py audio_stem_separator.py live_vtuber_streamer.py interactive_story_engine.py dataset_crawler_trainer.py hardware_governor.py auto_update_daemon.py run_daemon_hidden.vbs update_comfy.py build_and_push.py autostart_daemon.py system_benchmark.py run_autostart.bat .gitignore")
+    run_command("git add app.py engine_coordinator.py multi_agent_pipeline.py model_and_workflow_manager.py system_self_healer.py dataset_auto_annotator.py distributed_task_queue.py motion_upscale_pipeline.py live_stream_ingest.py semantic_vector_search.py automated_video_editor.py social_auto_publisher.py ai_self_learning_loop.py mission_control_dashboard.py master_system_orchestrator.py distributed_cluster_node.py cyber_integrity_monitor.py database_ha_replicator.py cloud_webhook_gateway.py alert_notification_bot.py model_quantizer_profiler.py ci_system_diagnostics.py lora_auto_trainer.py copyright_compliance_auditor.py auto_caption_generator.py video_watermark_branding.py audio_atmosphere_synthesizer.py ab_thumbnail_generator.py visual_quality_inspector.py cinematic_color_grader.py multilingual_voice_cloner.py viral_trend_analyzer.py video_super_resolution_engine.py post_publish_analytics_collector.py gpu_load_balancer.py lip_sync_aligner.py dynamic_scene_transition.py social_schedule_manager.py cloud_storage_backup.py monetization_injection_engine.py face_body_swapper.py audio_stem_separator.py live_vtuber_streamer.py interactive_story_engine.py dataset_crawler_trainer.py hardware_governor.py contextual_broll_engine.py jumpcut_remediation_engine.py aspect_ratio_reframer.py master_pipeline_orchestrator.py swarm_mesh_node.py mesh_model_cache_sync.py financial_roi_engine.py multimodal_realtime_director.py vtuber_audience_engine.py self_evolving_code_engine.py auto_update_daemon.py run_daemon_hidden.vbs update_comfy.py build_and_push.py autostart_daemon.py system_benchmark.py run_autostart.bat .gitignore")
     
-    commit_msg = '"Complete master architecture suite: Ad monetization, face swapper, audio stems, VTuber live streamer, interactive story, crawler trainer & hardware governor"'
+    commit_msg = '"COMPLETE ECOSYSTEM DEPLOYMENT: Baseline 48 modules + All 5 Evolutionary Tiers integrated"'
     print(f"[*] Committing changes: {commit_msg}")
     run_command(f'git commit -m {commit_msg}', check=False)
 
     print("[*] Pushing updates to GitHub remote...")
     run_command("git push origin main")
 
-    print("[+] Full compile, complete master suite integration, and Git push sequence complete.")
+    print("[+] ALL 5 EVOLUTIONARY TIERS INTEGRATED, FULL COMPILE, AND GIT PUSH SEQUENCE COMPLETE!")
 
 if __name__ == "__main__":
     main()
