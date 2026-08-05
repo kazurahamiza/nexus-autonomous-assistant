@@ -12,3 +12,4 @@ input_videos/
 ComfyUI/output/
 ComfyUI/input/
 ComfyUI/models/
+autostart_system.log

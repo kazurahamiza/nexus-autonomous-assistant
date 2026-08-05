@@ -30,7 +30,7 @@ def update_comfyui_system():
     if not COMFY_DIR:
         logging.info("[*] ComfyUI directory not found in local paths. Cloning fresh instance...")
         target_dir = os.path.join(BASE_DIR, 'ComfyUI')
-        run_cmd(f"git clone https://github.com/comfyanonymous/ComfyUI.git \"{target_dir}\"")
+        run_cmd(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{target_dir}"')
     else:
         target_dir = COMFY_DIR
 
@@ -55,7 +55,7 @@ def update_comfyui_system():
 
                 node_reqs = os.path.join(node_full_path, "requirements.txt")
                 if os.path.exists(node_reqs):
-                    run_cmd(f"pip install -r \"{node_reqs}\"")
+                    run_cmd(f'pip install -r "{node_reqs}"')
 
     # 3. Upgrade Core Dependencies
     logging.info("[*] Upgrading PyTorch, XFormers, and Diffusers...")
