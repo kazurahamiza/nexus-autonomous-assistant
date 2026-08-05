@@ -22,3 +22,6 @@ ci_test_report.json
 compliance_audit_log.json
 database_backups/
 self_learning_brutal_ai/optimized_rules.json
+watermark.png
+quality_inspection_log.json
+viral_trends_cache.json

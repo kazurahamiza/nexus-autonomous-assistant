@@ -93,7 +93,7 @@ class CIDiagnosticsRunner:
         with open(TEST_REPORT_FILE, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=4)
 
-        logging.info(f"[+] Diagnostic suit complete. Test report saved to '{TEST_REPORT_FILE}'.")
+        logging.info(f"[+] Diagnostic suite complete. Test report saved to '{TEST_REPORT_FILE}'.")
         return report
 
 if __name__ == "__main__":
