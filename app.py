@@ -8,6 +8,7 @@ import socket
 import concurrent.futures
 import asyncio
 import re
+import gc
 from PIL import Image, ImageDraw
 import cv2
 import numpy as np
@@ -95,7 +96,7 @@ class AISelfLearningEngine:
 
 
 # ==========================================
-# 3. BULLET-SPEED CUDA 8K CONVERTOR
+# 3. LOW-MEMORY CUDA 8K CONVERTOR
 # ==========================================
 
 def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
@@ -182,7 +183,7 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
 
 
 # ==========================================
-# 5. HIGH-SPEED MULTI-THREADED STORY RENDERER
+# 5. ZERO-RAM-LEAK STORY RENDER ENGINE
 # ==========================================
 
 async def generate_narration_audio(text: str, voice_name: str, output_audio_path: str):
@@ -196,7 +197,7 @@ async def generate_narration_audio(text: str, voice_name: str, output_audio_path
         return False
 
 
-def render_single_scene_task(args):
+def render_single_scene_task_low_mem(args):
     idx, scene_script, total_scenes, voice, style, timestamp = args
     temp_audio = os.path.join(OUTPUT_DIR, f"audio_{timestamp}_s{idx}.mp3")
     temp_raw_mp4 = os.path.join(OUTPUT_DIR, f"raw_{timestamp}_s{idx}.mp4")
@@ -215,54 +216,59 @@ def render_single_scene_task(args):
         except Exception:
             duration = 6.0
 
-    # 2. Render visuals
+    # 2. Low-Memory Frame Generation (Lightweight 1280x720 Base Canvas)
     fps = 30
     total_frames = max(30, int(fps * duration))
-    width, height = 1920, 1080
+    width, height = 1280, 720
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(temp_raw_mp4, fourcc, fps, (width, height))
 
-    c1, c2 = np.array([20, 20, 35]), np.array([80, 50, 110])
+    c1, c2 = np.array([20, 20, 35], dtype=np.uint8), np.array([80, 50, 110], dtype=np.uint8)
+
+    words = scene_script.split()
+    lines, curr_line = [], ""
+    for w in words:
+        if len(curr_line + " " + w) < 50:
+            curr_line += " " + w
+        else:
+            lines.append(curr_line.strip())
+            curr_line = w
+    if curr_line:
+        lines.append(curr_line.strip())
 
     for frame_idx in range(total_frames):
         progress = frame_idx / float(total_frames)
         interp_color = (c1 * (1 - progress) + c2 * progress).astype(np.uint8)
         frame = np.full((height, width, 3), interp_color, dtype=np.uint8)
 
-        cx = int(width / 2 + np.sin(progress * 2 * np.pi) * 200)
-        cy = int(height / 2 + np.cos(progress * 2 * np.pi) * 100)
-        cv2.circle(frame, (cx, cy), 300, (int(interp_color[0]*1.3)%255, int(interp_color[1]*1.3)%255, int(interp_color[2]*1.3)%255), -1)
+        cx = int(width / 2 + np.sin(progress * 2 * np.pi) * 150)
+        cy = int(height / 2 + np.cos(progress * 2 * np.pi) * 80)
+        cv2.circle(frame, (cx, cy), 200, (int(interp_color[0]*1.3)%255, int(interp_color[1]*1.3)%255, int(interp_color[2]*1.3)%255), -1)
 
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
 
-        draw.text((80, 60), f"ACT / SCENE {idx} of {total_scenes} [{style}]", fill=(255, 215, 0))
+        draw.text((40, 40), f"ACT / SCENE {idx} of {total_scenes} [{style}]", fill=(255, 215, 0))
 
-        words = scene_script.split()
-        lines, curr_line = [], ""
-        for w in words:
-            if len(curr_line + " " + w) < 70:
-                curr_line += " " + w
-            else:
-                lines.append(curr_line.strip())
-                curr_line = w
-        if curr_line:
-            lines.append(curr_line.strip())
-
-        y_offset = height - 200 - (len(lines) * 30)
+        y_offset = height - 160 - (len(lines) * 25)
         for line in lines[:4]:
-            draw.text((80, y_offset), line, fill=(255, 255, 255))
-            y_offset += 35
+            draw.text((40, y_offset), line, fill=(255, 255, 255))
+            y_offset += 28
 
         frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         out.write(frame)
 
+        # Force Memory Cleanup Every 30 Frames
+        if frame_idx % 30 == 0:
+            del frame, img_pil, draw
+            gc.collect()
+
     out.release()
 
-    # 3. Merge Audio/Video
+    # 3. Fast NVENC Hardware Encoding
     if audio_ok and os.path.exists(temp_audio):
-        merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -c:a aac -shortest "{temp_final_scene}"'
+        merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -tune ll -c:a aac -shortest "{temp_final_scene}"'
         res = subprocess.run(merge_cmd, shell=True, capture_output=True)
         if res.returncode != 0:
             cpu_merge = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v libx264 -preset ultrafast -c:a aac -shortest "{temp_final_scene}"'
@@ -270,6 +276,14 @@ def render_single_scene_task(args):
     else:
         temp_final_scene = temp_raw_mp4
 
+    # Clear temp raw file to conserve RAM & VRAM
+    if os.path.exists(temp_raw_mp4) and os.path.exists(temp_final_scene) and temp_raw_mp4 != temp_final_scene:
+        try:
+            os.remove(temp_raw_mp4)
+        except Exception:
+            pass
+
+    gc.collect()
     return idx, temp_final_scene if os.path.exists(temp_final_scene) else None
 
 
@@ -282,9 +296,9 @@ def render_full_scale_singularity_story_parallel(full_story: str, voice: str, st
     tasks = [(idx, scene, len(scenes), voice, style, timestamp) for idx, scene in enumerate(scenes, 1)]
     rendered_dict = {}
 
-    # Parallelize scene rendering across CPU/GPU workers
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(render_single_scene_task, task) for task in tasks]
+    # Strict worker cap to avoid RAM overload
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(render_single_scene_task_low_mem, task) for task in tasks]
         for future in concurrent.futures.as_completed(futures):
             idx, sc_path = future.result()
             if sc_path:
@@ -303,6 +317,7 @@ def render_full_scale_singularity_story_parallel(full_story: str, voice: str, st
     elif ordered_files:
         target_output_mp4 = ordered_files[0]
 
+    gc.collect()
     return target_output_mp4
 
 
@@ -314,15 +329,13 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
     timestamp = int(time.time())
     raw_movie_path = os.path.join(OUTPUT_DIR, f"full_movie_{category}_{timestamp}.mp4")
 
-    # Render long story in parallel
     rendered_file = render_full_scale_singularity_story_parallel(prompt, voice, style, raw_movie_path)
     
-    # Conditional 8K upscale toggle
     final_output_file = convert_video_to_8k_bullet_speed(rendered_file) if auto_8k else rendered_file
 
     blueprint = {
         "meta": {
-            "engine": "Apex-Singularity-Master-Kernel-v11.0",
+            "engine": "Apex-Singularity-Master-Kernel-v12.0",
             "category": category,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_platform": platform,
@@ -336,7 +349,7 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
     with open(blueprint_file, "w", encoding="utf-8") as f:
         json.dump(blueprint, f, indent=2)
 
-    output_log = f"[+] LONG-FORM MOVIE RENDERED!\nOutput File: {final_output_file}\nSaved Blueprint: {blueprint_file}"
+    output_log = f"[+] MEMORY-OPTIMIZED MOVIE RENDERED!\nOutput File: {final_output_file}\nSaved Blueprint: {blueprint_file}"
     return output_log, final_output_file
 
 
@@ -396,7 +409,7 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 with gr.Column(scale=2):
                     prompt_input = gr.Textbox(
                         label="AI Generation Concept / Full Story & Character Script",
-                        placeholder="Paste your long adult content story script here...",
+                        placeholder="Paste your long story script here...",
                         lines=8
                     )
                     with gr.Row():
