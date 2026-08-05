@@ -591,12 +591,19 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     return output_path, f"Rendered {total_frames} Action Motion Frames to: {output_path}"
 
 def fetch_local_generated_videos():
-    """Returns local output MP4 files sorted by timestamp."""
+    """Returns a list of tuples containing (Human Readable Title, Full File Path) for output videos."""
     files = glob.glob(os.path.join(OUTPUT_DIR, "*.mp4"))
     if not files:
         return []
     files.sort(key=os.path.getmtime, reverse=True)
-    return files
+    
+    choices = []
+    for f in files:
+        filename = os.path.basename(f)
+        mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(f)))
+        clean_label = f"🎬 {filename} [{mtime_str}]"
+        choices.append((clean_label, f))
+    return choices
 
 # =========================================================
 # 7. CODE100 CHINESE DATASET PARSER
@@ -668,7 +675,11 @@ with gr.Blocks() as demo:
     with gr.Tab("📥 Video DownloadHelper & CUDA 8K Converter"):
         gr.Markdown("### Direct Media Export & Batch Downloader")
         refresh_downloads_btn = gr.Button("🔄 Refresh Output Videos List", variant="primary")
-        download_dropdown = gr.Dropdown(choices=fetch_local_generated_videos(), label="Select Generated Output Video")
+        download_dropdown = gr.Dropdown(
+            choices=fetch_local_generated_videos(), 
+            label="Select Generated Output Video by Title",
+            interactive=True
+        )
         download_file_widget = gr.File(label="Download Media File Target")
 
         def update_download_file(selected_path):
