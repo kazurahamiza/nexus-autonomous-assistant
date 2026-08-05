@@ -16,3 +16,9 @@ autostart_system.log
 vector_index.json
 published_analytics.json
 self_learning_brutal_ai/dataset/
+cluster_nodes.json
+system_integrity_manifest.json
+ci_test_report.json
+compliance_audit_log.json
+database_backups/
+self_learning_brutal_ai/optimized_rules.json
