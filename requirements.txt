@@ -1,0 +1,16 @@
+psutil
+deep-translator
+yt-dlp
+gradio
+opencv-python
+diffusers
+edge-tts
+mutagen
+flask
+requests
+numpy
+torch
+celery
+redis
+psycopg2-binary
+qdrant-client
