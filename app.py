@@ -48,7 +48,7 @@ except ImportError:
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [MASTER-STUDIO-CORE] %(message)s",
+    format="[%(asctime)s] [%(levelname)s] [MASTER-BRAIN-CORE] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler("system_pipeline.log", encoding="utf-8")
@@ -61,11 +61,12 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output_videos")
 CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 KEYFRAMES_DIR = os.path.join(DATASET_DIR, "extracted_keyframes")
+KNOWLEDGE_DIR = os.path.join(DATASET_DIR, "knowledge_notes")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_processing")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Category Hierarchy Mapping
+# Master Audit & Second Brain Category Hierarchy
 CATEGORY_MAP = {
     "Audit_Chinese_Storytelling": "dataset/audit_chinese_storytelling",
     "Audit_General_Storytelling": "dataset/audit_general_storytelling",
@@ -84,7 +85,7 @@ CATEGORY_MAP = {
 for subpath in CATEGORY_MAP.values():
     os.makedirs(os.path.join(BASE_DIR, subpath), exist_ok=True)
 
-for dir_path in [INPUT_DIR, OUTPUT_DIR, CONVERTED_DIR, DATASET_DIR, KEYFRAMES_DIR, MODELS_DIR, TEMP_DIR]:
+for dir_path in [INPUT_DIR, OUTPUT_DIR, CONVERTED_DIR, DATASET_DIR, KEYFRAMES_DIR, KNOWLEDGE_DIR, MODELS_DIR, TEMP_DIR]:
     os.makedirs(dir_path, exist_ok=True)
 
 # Threading locks and execution state management
@@ -93,11 +94,11 @@ GPU_LOCK = threading.Lock()
 CLIPBOARD_CACHE = ""
 IS_WATCHER_RUNNING = True
 
-logging.info(f"Initialized Core Master Environment. Base Path: {BASE_DIR}")
+logging.info(f"Initialized Master Second Brain Environment. Base Path: {BASE_DIR}")
 logging.info(f"Hardware Acceleration Status -> PyTorch: {HAS_TORCH}, CUDA: {CUDA_AVAILABLE}, Diffusers: {HAS_DIFFUSERS}")
 
 # =========================================================
-# 1. AI TELEMETRY & AUTO-LEARNING ENGINE
+# 1. TELEMETRY DATABASE ENGINE
 # =========================================================
 
 def load_telemetry_db():
@@ -109,13 +110,13 @@ def load_telemetry_db():
                     data = json.load(f)
                     if not isinstance(data, dict):
                         data = {}
-                    if "learned_videos" not in data:
-                        data["learned_videos"] = {}
+                    data.setdefault("learned_videos", {})
+                    data.setdefault("knowledge_base", {})
                     return data
             except Exception as e:
                 logging.error(f"Failed to load telemetry database: {e}")
-                return {"learned_videos": {}, "system_metadata": {}, "last_updated": time.time()}
-        return {"learned_videos": {}, "system_metadata": {}, "last_updated": time.time()}
+                return {"learned_videos": {}, "knowledge_base": {}, "system_metadata": {}, "last_updated": time.time()}
+        return {"learned_videos": {}, "knowledge_base": {}, "system_metadata": {}, "last_updated": time.time()}
 
 def save_telemetry_db(data):
     """Thread-safe persistent storage of telemetry metrics."""
@@ -128,6 +129,85 @@ def save_telemetry_db(data):
             os.replace(temp_db_path, LEARNING_DB)
         except Exception as e:
             logging.error(f"Failed to persist telemetry database: {e}")
+
+# =========================================================
+# 2. SECOND BRAIN TEXT & NOTES INGESTION ENGINE
+# =========================================================
+
+def scan_and_index_text_knowledge():
+    """Scans and indexes raw text notes, audit briefs, and scripts into the second brain."""
+    db = load_telemetry_db()
+    db.setdefault("knowledge_base", {})
+    
+    text_files = glob.glob(os.path.join(KNOWLEDGE_DIR, "**", "*.txt"), recursive=True) + \
+                 glob.glob(os.path.join(KNOWLEDGE_DIR, "**", "*.md"), recursive=True) + \
+                 glob.glob(os.path.join(KNOWLEDGE_DIR, "**", "*.json"), recursive=True)
+                 
+    new_docs = 0
+    for file_path in text_files:
+        rel_key = os.path.relpath(file_path, BASE_DIR)
+        mtime = os.path.getmtime(file_path)
+        
+        if rel_key in db["knowledge_base"] and db["knowledge_base"][rel_key].get("mtime") == mtime:
+            continue
+            
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                
+            words = re.findall(r'\b\w{4,}\b', content.lower())
+            freq = {}
+            for w in words:
+                freq[w] = freq.get(w, 0) + 1
+            top_keywords = sorted(freq, key=freq.get, reverse=True)[:12]
+            
+            db["knowledge_base"][rel_key] = {
+                "mtime": mtime,
+                "size_kb": round(os.path.getsize(file_path) / 1024, 2),
+                "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "top_keywords": top_keywords,
+                "char_count": len(content),
+                "snippet": content[:300].replace("\n", " ")
+            }
+            new_docs += 1
+        except Exception as e:
+            logging.error(f"Error indexing text document {file_path}: {e}")
+            
+    if new_docs > 0:
+        save_telemetry_db(db)
+        logging.info(f"Second Brain Note Engine: Ingested {new_docs} new document(s).")
+    return len(db["knowledge_base"]), new_docs
+
+def search_second_brain(query_term):
+    """Queries both video telemetry assets and indexed knowledge notes."""
+    if not query_term or query_term.strip() == "":
+        return "Please enter a search term."
+        
+    db = load_telemetry_db()
+    query_lower = query_term.lower()
+    results = []
+    
+    # 1. Search Video Assets
+    for path, meta in db.get("learned_videos", {}).items():
+        cat = meta.get("category", "")
+        if query_lower in path.lower() or query_lower in cat.lower():
+            results.append(f"📹 [VIDEO ASSET] {path}\n    └─ Category: {cat} | Res: {meta.get('resolution')} | Duration: {meta.get('duration_sec')}s | Size: {meta.get('file_size_mb')} MB")
+            
+    # 2. Search Text Knowledge Notes
+    for path, meta in db.get("knowledge_base", {}).items():
+        keywords = meta.get("top_keywords", [])
+        snippet = meta.get("snippet", "")
+        if query_lower in path.lower() or any(query_lower in k for k in keywords) or query_lower in snippet.lower():
+            results.append(f"📄 [KNOWLEDGE NOTE] {path}\n    └─ Keywords: {', '.join(keywords[:6])}\n    └─ Snippet: \"{snippet[:150]}...\"")
+            
+    if not results:
+        return f"No direct memory matches found for query term: '{query_term}'"
+        
+    return f"=== SECOND BRAIN MEMORY MATCHES ({len(results)}) ===\n\n" + "\n\n".join(results)
+
+# =========================================================
+# 3. OPTICAL FEATURE EXTRACTION & AUTO-LEARNING
+# =========================================================
 
 def compute_frame_descriptors(frame):
     """Extracts optical, color space, and perceptual sharpness metrics from a frame."""
@@ -247,6 +327,7 @@ def scan_and_learn_all_videos():
         save_telemetry_db(db)
         logging.info(f"Auto-learning scan complete. Ingested {new_learned_count} asset(s).")
     
+    scan_and_index_text_knowledge()
     return len(db.get("learned_videos", {})), new_learned_count
 
 def background_auto_learning_loop(poll_interval=10):
@@ -262,7 +343,7 @@ watcher_thread = threading.Thread(target=background_auto_learning_loop, daemon=T
 watcher_thread.start()
 
 # =========================================================
-# 2. CLIPBOARD SNIFFER AUTOMATION
+# 4. CLIPBOARD SNIFFER AUTOMATION
 # =========================================================
 
 def clipboard_sniffer_loop(poll_interval=2):
@@ -292,7 +373,7 @@ clipboard_thread = threading.Thread(target=clipboard_sniffer_loop, daemon=True)
 clipboard_thread.start()
 
 # =========================================================
-# 3. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
+# 5. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
 # =========================================================
 
 def resize_and_bucket_frame(image, target_size=1024):
@@ -399,11 +480,11 @@ def run_auto_tagger():
     return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
 
 # =========================================================
-# 4. FULL AI ACTION VIDEO GENERATION PIPELINE
+# 6. ACTION VIDEO GENERATION PIPELINE (GPU + PROCEDURAL)
 # =========================================================
 
 def generate_ai_action_video(script_text, init_image, category_target, motion_scale, target_duration_frames):
-    """Executes high-motion dynamic video synthesis with action movement."""
+    """Executes dynamic video synthesis with action movement parameters."""
     if not script_text or script_text.strip() == "":
         script_text = "Master Audit Cinematic Storytelling, dynamic camera action movement, real models, 8k background"
 
@@ -415,10 +496,10 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         elif isinstance(init_image, Image.Image):
             init_image.save(temp_img_path)
 
-    # 1. GPU Diffusion Video Generation (If CUDA + PyTorch Diffusers pipeline exists)
+    # 1. GPU Diffusion Pipeline Execution (If PyTorch + CUDA + Diffusers active)
     if HAS_TORCH and CUDA_AVAILABLE and HAS_DIFFUSERS:
         try:
-            logging.info("Initializing GPU Video Diffusion Pipeline...")
+            logging.info("Executing GPU Stable Video Diffusion Pipeline...")
             pipe = StableVideoDiffusionPipeline.from_pretrained(
                 "stabilityai/stable-video-diffusion-img2vid-xt",
                 torch_dtype=torch.float16,
@@ -451,11 +532,11 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
             writer.release()
 
             scan_and_learn_all_videos()
-            return out_path, f"GPU Diffusion Video Generation Finished! Saved to: {out_path}"
+            return out_path, f"GPU Diffusion Video Generation Complete! Exported to: {out_path}"
         except Exception as e:
-            logging.error(f"Diffusion generation error: {e}. Falling back to dynamic procedural action render.")
+            logging.error(f"GPU Diffusion Execution Fallback: {e}")
 
-    # 2. Dynamic Procedural Action Generator (High Performance Local Fallback Engine)
+    # 2. High-Performance Procedural Action Movement Engine (Local Fallback)
     output_filename = f"action_story_{int(time.time())}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
     fps = 30
@@ -466,7 +547,6 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         base_frame = cv2.imread(temp_img_path)
         base_frame = cv2.resize(base_frame, (w, h))
     else:
-        # Create dynamic high-contrast background render
         base_frame = np.zeros((h, w, 3), dtype=np.uint8)
         cv2.rectangle(base_frame, (0, 0), (w, h), (25, 20, 15), -1)
         cv2.putText(base_frame, "MASTER AUDIT REAL ACTION ENGINE", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
@@ -477,7 +557,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     for i in range(total_frames):
         frame = base_frame.copy()
         
-        # Action Movement: Pan, Tilt, Zoom transformation
+        # Pan / Zoom / Tilt dynamic affine transform
         scale_val = 1.0 + 0.08 * np.sin(i * 0.05 * motion_factor)
         dx = int(25 * np.cos(i * 0.08 * motion_factor))
         dy = int(15 * np.sin(i * 0.08 * motion_factor))
@@ -485,7 +565,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         M = np.float32([[scale_val, 0, dx], [0, scale_val, dy]])
         frame = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_REFLECT)
         
-        # Action Movement: Dynamic lighting pulses & tracking sweeps
+        # Action Movement: Tracking sweep & pulse render
         cx = int(w / 2 + 220 * np.sin(i * 0.1 * motion_factor))
         cy = int(h / 2 + 60 * np.cos(i * 0.1 * motion_factor))
         
@@ -502,7 +582,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     writer.release()
     gc.collect()
 
-    # Route output to selected category directory
+    # Route output to designated category folder
     target_rel_dir = CATEGORY_MAP.get(category_target, "input_videos/auto_detected")
     target_abs_dir = os.path.join(BASE_DIR, target_rel_dir)
     shutil.copy2(output_path, os.path.join(target_abs_dir, output_filename))
@@ -511,7 +591,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     return output_path, f"Rendered {total_frames} Action Motion Frames to: {output_path}"
 
 def fetch_local_generated_videos():
-    """Returns a list of local output MP4 files sorted by creation date."""
+    """Returns local output MP4 files sorted by timestamp."""
     files = glob.glob(os.path.join(OUTPUT_DIR, "*.mp4"))
     if not files:
         return []
@@ -519,7 +599,7 @@ def fetch_local_generated_videos():
     return files
 
 # =========================================================
-# 5. CODE100 CHINESE DATASET PARSER
+# 7. CODE100 CHINESE DATASET PARSER
 # =========================================================
 
 def get_code100_summary():
@@ -538,14 +618,16 @@ def get_code100_summary():
     return out
 
 # =========================================================
-# 6. GRADIO USER INTERFACE
+# 8. GRADIO USER INTERFACE
 # =========================================================
 
 def get_telemetry_status():
     """Generates telemetry status and raw JSON for display."""
     db = load_telemetry_db()
     learned = db.get("learned_videos", {})
+    knowledge = db.get("knowledge_base", {})
     total_videos = len(learned)
+    total_notes = len(knowledge)
     categories_summary = {}
     
     total_duration = 0.0
@@ -557,10 +639,11 @@ def get_telemetry_status():
         total_duration += v_info.get("duration_sec", 0.0)
         total_mb += v_info.get("file_size_mb", 0.0)
 
-    summary_str = f"=== MASTER AUDIT TELEMETRY STATUS REPORT ===\n"
+    summary_str = f"=== MASTER SECOND BRAIN & TELEMETRY REPORT ===\n"
     summary_str += f"Total Video Assets Ingested: {total_videos}\n"
-    summary_str += f"Total Analyzed Duration: {round(total_duration / 60, 2)} minutes\n"
-    summary_str += f"Total Tracked Disk Usage: {round(total_mb / 1024, 2)} GB\n\n"
+    summary_str += f"Total Knowledge Notes/Docs Indexed: {total_notes}\n"
+    summary_str += f"Total Analyzed Video Duration: {round(total_duration / 60, 2)} minutes\n"
+    summary_str += f"Total Tracked Media Disk Usage: {round(total_mb / 1024, 2)} GB\n\n"
     summary_str += "Category Breakdown:\n"
     
     for cat, count in categories_summary.items():
@@ -570,7 +653,7 @@ def get_telemetry_status():
 
 def manual_rescan():
     total, new_found = scan_and_learn_all_videos()
-    return f"Rescan Complete! Active Total: {total}. Newly Ingested: {new_found}."
+    return f"Rescan Complete! Active Video Total: {total}. Newly Ingested: {new_found}."
 
 custom_css = """
 .container { max-width: 1400px; margin: auto; }
@@ -580,7 +663,7 @@ custom_css = """
 
 with gr.Blocks() as demo:
     gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
-    gr.Markdown("Real Action Motion Generation | Chinese Storytelling Datasets | Keyframe Extraction | Optical Tagger")
+    gr.Markdown("Second Brain Memory | Action Motion Generation | Chinese Storytelling Datasets | Optical Tagger")
 
     with gr.Tab("📥 Video DownloadHelper & CUDA 8K Converter"):
         gr.Markdown("### Direct Media Export & Batch Downloader")
@@ -640,6 +723,15 @@ with gr.Blocks() as demo:
             outputs=[video_preview, gen_logs]
         )
 
+    with gr.Tab("🧠 Second Brain Knowledge Search"):
+        gr.Markdown("### Query Video Telemetry & Text Notes Memory Bank")
+        with gr.Row():
+            query_box = gr.Textbox(label="Search Term / Keyword", placeholder="e.g. audit, market, video, chinese, telemetry...", scale=3)
+            search_btn = gr.Button("🔍 Search Memory Bank", variant="primary", scale=1)
+        
+        search_output = gr.Textbox(label="Second Brain Retrieval Results", lines=12, elem_classes=["status-box"])
+        search_btn.click(fn=search_second_brain, inputs=[query_box], outputs=[search_output])
+
     with gr.Tab("📊 Telemetry & Auto-Learning"):
         with gr.Row():
             rescan_btn = gr.Button("🔍 Force Rescan & Ingest Now", variant="primary")
@@ -672,11 +764,11 @@ with gr.Blocks() as demo:
     demo.load(fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer])
 
 # =========================================================
-# 7. MAIN ENTRY POINT EXECUTION
+# 9. MAIN ENTRY POINT EXECUTION
 # =========================================================
 
 if __name__ == "__main__":
-    logging.info("Starting up Master Audit & Action Video pipeline engine...")
+    logging.info("Starting up Master Second Brain & Video pipeline engine...")
     scan_and_learn_all_videos()
     demo.queue().launch(
         server_name="0.0.0.0",
