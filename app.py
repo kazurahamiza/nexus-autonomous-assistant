@@ -9,10 +9,18 @@ import concurrent.futures
 import asyncio
 import re
 import gc
+import threading
 from PIL import Image, ImageDraw
 import cv2
 import numpy as np
 import gradio as gr
+
+# Try importing pyperclip for clipboard sniffing automation
+try:
+    import pyperclip
+    HAS_PYPERCLIP = True
+except ImportError:
+    HAS_PYPERCLIP = False
 
 # ==========================================
 # 0. SYSTEM LOGGING & DIRECTORY CONFIGURATION
@@ -128,8 +136,11 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
 
 
 # ==========================================
-# 4. PARALLEL MULTI-VIDEO DOWNLOAD ENGINE
+# 4. DOWNLOADHELPER AUTOMATION ENGINE
 # ==========================================
+
+AUTO_DOWNLOAD_QUEUE = []
+DOWNLOAD_HISTORY = set()
 
 def download_single_url_task(args):
     idx, url, total_count, selected_category, browser_choice, auto_convert_8k = args
@@ -142,7 +153,7 @@ def download_single_url_task(args):
         "-P", f'"{target_dir}"', "-o", '"%(title)s.%(ext)s"', "--restrict-filenames", f'"{url}"'
     ]
 
-    log_entry = f"[*] [{idx}/{total_count}] Processing ({active_cat}): {url}\n"
+    log_entry = f"[*] [{idx}/{total_count}] DownloadHelper Processing ({active_cat}): {url}\n"
     converted_file_path = None
 
     try:
@@ -152,7 +163,11 @@ def download_single_url_task(args):
             downloaded_files = [os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith(('.mp4', '.mkv', '.webm'))]
             if downloaded_files:
                 latest_file = max(downloaded_files, key=os.path.getmtime)
-                converted_file_path = convert_video_to_8k_bullet_speed(latest_file) if auto_convert_8k else latest_file
+                if auto_convert_8k:
+                    log_entry += f"[*] [8K AUTO-CONVERT] Processing: {os.path.basename(latest_file)}...\n"
+                    converted_file_path = convert_video_to_8k_bullet_speed(latest_file)
+                else:
+                    converted_file_path = latest_file
         else:
             log_entry += f"[ERROR] Failed: {url}\n"
     except Exception as e:
@@ -166,7 +181,7 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
         return "[!] Error: No video URLs provided.", None, None
 
     urls = [u.strip() for u in url_input.splitlines() if u.strip()]
-    logs = [f"=== STARTING PARALLEL MULTI-VIDEO BATCH ({len(urls)} URLs) ==="]
+    logs = [f"=== STARTING DOWNLOADHELPER AUTOMATION BATCH ({len(urls)} URLs) ==="]
     converted_videos = []
 
     tasks = [(idx, url, len(urls), selected_category, browser_choice, auto_convert_8k) for idx, url in enumerate(urls, 1)]
@@ -180,6 +195,38 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
                 converted_videos.append(vid_path)
 
     return "\n".join(logs), (converted_videos[0] if converted_videos else None), converted_videos
+
+
+# Background Clipboard Listener (Video DownloadHelper Sniffer)
+def clipboard_listener_loop():
+    if not HAS_PYPERCLIP:
+        return
+    last_clip = ""
+    while True:
+        try:
+            curr_clip = pyperclip.paste().strip()
+            if curr_clip != last_clip and curr_clip.startswith("http"):
+                last_clip = curr_clip
+                if any(k in curr_clip.lower() for k in ["spankbang", "pornhub", "xvideos", "redtube", "youtube", "vimeo", "adult"]):
+                    if curr_clip not in DOWNLOAD_HISTORY:
+                        DOWNLOAD_HISTORY.add(curr_clip)
+                        logging.info(f"[+] [DOWNLOADHELPER SNIFFER] Captured URL from clipboard: {curr_clip}")
+                        AUTO_DOWNLOAD_QUEUE.append(curr_clip)
+        except Exception:
+            pass
+        time.sleep(2)
+
+# Start background clipboard daemon thread
+threading.Thread(target=clipboard_listener_loop, daemon=True).start()
+
+
+def fetch_clipboard_captured_urls():
+    """Returns captured URLs directly into the URL textbox."""
+    if not HAS_PYPERCLIP:
+        return "pyperclip module not installed. Install via: pip install pyperclip"
+    if not AUTO_DOWNLOAD_QUEUE:
+        return "No new video URLs captured yet. Right-click copy any video link from your browser to capture!"
+    return "\n".join(AUTO_DOWNLOAD_QUEUE)
 
 
 # ==========================================
@@ -203,7 +250,6 @@ def render_single_scene_task_low_mem(args):
     temp_raw_mp4 = os.path.join(OUTPUT_DIR, f"raw_{timestamp}_s{idx}.mp4")
     temp_final_scene = os.path.join(OUTPUT_DIR, f"final_s{idx}_{timestamp}.mp4")
 
-    # 1. Generate audio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     audio_ok = loop.run_until_complete(generate_narration_audio(scene_script, voice, temp_audio))
@@ -216,7 +262,6 @@ def render_single_scene_task_low_mem(args):
         except Exception:
             duration = 6.0
 
-    # 2. Low-Memory Frame Generation (Lightweight 1280x720 Base Canvas)
     fps = 30
     total_frames = max(30, int(fps * duration))
     width, height = 1280, 720
@@ -259,14 +304,12 @@ def render_single_scene_task_low_mem(args):
         frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         out.write(frame)
 
-        # Force Memory Cleanup Every 30 Frames
         if frame_idx % 30 == 0:
             del frame, img_pil, draw
             gc.collect()
 
     out.release()
 
-    # 3. Fast NVENC Hardware Encoding
     if audio_ok and os.path.exists(temp_audio):
         merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -tune ll -c:a aac -shortest "{temp_final_scene}"'
         res = subprocess.run(merge_cmd, shell=True, capture_output=True)
@@ -276,7 +319,6 @@ def render_single_scene_task_low_mem(args):
     else:
         temp_final_scene = temp_raw_mp4
 
-    # Clear temp raw file to conserve RAM & VRAM
     if os.path.exists(temp_raw_mp4) and os.path.exists(temp_final_scene) and temp_raw_mp4 != temp_final_scene:
         try:
             os.remove(temp_raw_mp4)
@@ -296,7 +338,6 @@ def render_full_scale_singularity_story_parallel(full_story: str, voice: str, st
     tasks = [(idx, scene, len(scenes), voice, style, timestamp) for idx, scene in enumerate(scenes, 1)]
     rendered_dict = {}
 
-    # Strict worker cap to avoid RAM overload
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(render_single_scene_task_low_mem, task) for task in tasks]
         for future in concurrent.futures.as_completed(futures):
@@ -330,12 +371,11 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
     raw_movie_path = os.path.join(OUTPUT_DIR, f"full_movie_{category}_{timestamp}.mp4")
 
     rendered_file = render_full_scale_singularity_story_parallel(prompt, voice, style, raw_movie_path)
-    
     final_output_file = convert_video_to_8k_bullet_speed(rendered_file) if auto_8k else rendered_file
 
     blueprint = {
         "meta": {
-            "engine": "Apex-Singularity-Master-Kernel-v12.0",
+            "engine": "Apex-Singularity-Master-Kernel-v13.0",
             "category": category,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_platform": platform,
@@ -377,26 +417,36 @@ def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
 
 
 with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
-    gr.Markdown("# ⚡ Apex AI Studio - Multi-Video Scraper, CUDA 8K Converter & Studio Kernel")
+    gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
 
     with gr.Tabs():
-        with gr.TabItem("📥 Multi-Video Downloader & CUDA 8K Converter"):
+        # TAB 1: VIDEO DOWNLOADHELPER AUTOMATION & CUDA 8K CONVERT ENGINE
+        with gr.TabItem("📥 Video DownloadHelper & CUDA 8K Converter"):
             with gr.Row():
                 with gr.Column(scale=2):
-                    url_box = gr.Textbox(label="Target Video URLs", placeholder="Paste links here...", lines=8)
+                    url_box = gr.Textbox(
+                        label="Target Video URLs (Paste multiple links OR click auto-fetch below)",
+                        placeholder="https://spankbang.com/...\nhttps://pornhub.com/...\nhttps://xvideos.com/...",
+                        lines=8
+                    )
+                    
+                    fetch_clip_btn = gr.Button("📋 Auto-Fetch Right-Clicked Copied Video Links (Video DownloadHelper Mode)", variant="secondary")
+
                     with gr.Row():
                         category_dropdown = gr.Dropdown(choices=list(CATEGORY_MAP.keys()), value="Auto-Detect Category", label="Category Mapping")
                         browser_dropdown = gr.Dropdown(choices=["firefox", "chrome", "edge"], value="firefox", label="Cookie Source Browser")
                     with gr.Row():
-                        parallel_threads_slider = gr.Slider(minimum=1, maximum=8, value=3, step=1, label="Parallel Workers")
-                        auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Auto-Convert Downloads to 8K")
+                        parallel_threads_slider = gr.Slider(minimum=1, maximum=8, value=3, step=1, label="Parallel Concurrent Download Workers")
+                        auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Straightaway Auto-Convert Downloads to 8K Resolution (CUDA NVENC)")
 
-                    process_btn = gr.Button("🚀 Execute Multi-Video Download & 8K Conversion", variant="primary", size="lg")
+                    process_btn = gr.Button("🚀 Download Straightaway & Auto-Convert to 8K", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    preview_player = gr.Video(label="🎬 Primary Preview", interactive=False)
-                    video_gallery = gr.Gallery(label="📁 Batch Outputs", columns=3, height=250)
-                    status_output = gr.Textbox(label="Output Logs", lines=10, interactive=False)
+                    preview_player = gr.Video(label="🎬 Primary Converted 8K Video Preview", interactive=False)
+                    video_gallery = gr.Gallery(label="📁 Converted 8K Batch Video Outputs", columns=3, height=250)
+                    status_output = gr.Textbox(label="Batch Terminal Processing Logs", lines=10, interactive=False)
+
+            fetch_clip_btn.click(fn=fetch_clipboard_captured_urls, outputs=url_box)
 
             process_btn.click(
                 fn=process_multi_video_downloader,
@@ -404,12 +454,13 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[status_output, preview_player, video_gallery]
             )
 
+        # TAB 2: AI LEARNING STORY VIDEO GENERATOR
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
                     prompt_input = gr.Textbox(
                         label="AI Generation Concept / Full Story & Character Script",
-                        placeholder="Paste your long story script here...",
+                        placeholder="Paste your long adult content story script here...",
                         lines=8
                     )
                     with gr.Row():
@@ -435,6 +486,7 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[gen_output, ai_preview_player]
             )
 
+        # TAB 3: WORKSPACE MICROSERVICES
         with gr.TabItem("🛠️ Workspace Microservices"):
             with gr.Row():
                 annotator_btn = gr.Button("🏷️ Run Dataset Auto-Annotator")
