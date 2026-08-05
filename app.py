@@ -5,7 +5,7 @@ import time
 import logging
 import subprocess
 import socket
-import re
+import concurrent.futures
 import gradio as gr
 
 # ==========================================
@@ -24,7 +24,7 @@ CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Categories for auto-routing and manual selection
+# Content Category Directory Mappings
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -115,9 +115,9 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
     base_name, _ = os.path.splitext(filename)
     output_8k_path = os.path.join(CONVERTED_DIR, f"{base_name}_8K.mp4")
 
-    logging.info(f"[*] [BULLET CONVERTER] Processing 8K upscale: {filename}")
+    logging.info(f"[*] [CUDA 8K CONVERTER] Upscaling to 8K: {filename}")
 
-    # NVIDIA NVENC Hardware Accelerated FFmpeg Command
+    # Hardware Accelerated NVENC Command
     ffmpeg_nvenc_cmd = [
         "ffmpeg", "-y",
         "-hwaccel", "cuda",
@@ -136,7 +136,7 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
             logging.info(f"[+] [NVENC CUDA SUCCESS] 8K Converted: {output_8k_path}")
             return output_8k_path
         else:
-            # CPU Fallback with all core threads
+            # CPU Fallback
             cpu_cmd = (
                 f'ffmpeg -y -i "{input_file_path}" '
                 f'-vf "scale=7680:4320:flags=lanczos" '
@@ -150,64 +150,87 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
 
 
 # ==========================================
-# 4. HIGH-SPEED DOWNLOAD & PREVIEW ENGINE
+# 4. MULTI-VIDEO PARALLEL DOWNLOAD ENGINE
 # ==========================================
 
-def process_download_convert_preview(url_input: str, selected_category: str, browser_choice: str, auto_convert_8k: bool):
+def download_single_url_task(args):
+    idx, url, total_count, selected_category, browser_choice, auto_convert_8k = args
+    
+    if selected_category == "Auto-Detect Category":
+        active_cat = auto_detect_category_from_url(url)
+    else:
+        active_cat = selected_category
+
+    target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(active_cat, "input_videos/general"))
+    os.makedirs(target_dir, exist_ok=True)
+
+    cmd = [
+        "yt-dlp",
+        "--cookies-from-browser", browser_choice,
+        "-N", "16",
+        "-P", f'"{target_dir}"',
+        "-o", '"%(title)s.%(ext)s"',
+        "--restrict-filenames",
+        f'"{url}"'
+    ]
+
+    log_entry = f"[*] [{idx}/{total_count}] Processing ({active_cat}): {url}\n"
+    converted_file_path = None
+
+    try:
+        res = subprocess.run(" ".join(cmd), shell=True, capture_output=True, text=True)
+        if res.returncode == 0:
+            log_entry += f"[SUCCESS] Downloaded: {url} -> [{active_cat}]\n"
+            
+            downloaded_files = [
+                os.path.join(target_dir, f) for f in os.listdir(target_dir) 
+                if f.endswith(('.mp4', '.mkv', '.webm'))
+            ]
+            if downloaded_files:
+                latest_file = max(downloaded_files, key=os.path.getmtime)
+                if auto_convert_8k:
+                    log_entry += f"[*] [8K UPSCALE] Converting {os.path.basename(latest_file)}...\n"
+                    converted_file_path = convert_video_to_8k_bullet_speed(latest_file)
+                else:
+                    converted_file_path = latest_file
+        else:
+            log_entry += f"[ERROR] Failed: {url}\n    Details: {res.stderr[:200]}\n"
+    except Exception as e:
+        log_entry += f"[EXCEPTION] Error on {url}: {str(e)}\n"
+
+    return log_entry, converted_file_path
+
+
+def process_multi_video_downloader(url_input: str, selected_category: str, browser_choice: str, auto_convert_8k: bool, max_parallel: int):
     if not url_input or not url_input.strip():
-        return "[!] Error: No URLs provided.", None
+        return "[!] Error: No video URLs provided.", None, None
 
     urls = [u.strip() for u in url_input.splitlines() if u.strip()]
-    logs = []
-    last_converted_video = None
+    total_count = len(urls)
+    
+    logs = [f"=== STARTING PARALLEL MULTI-VIDEO BATCH ({total_count} URLs, {max_parallel} Threads) ==="]
+    converted_videos = []
 
-    for idx, url in enumerate(urls, 1):
-        if selected_category == "Auto-Detect Category":
-            active_cat = auto_detect_category_from_url(url)
-            logs.append(f"[*] Auto-Detected Category for [{url}]: {active_cat}")
-        else:
-            active_cat = selected_category
+    tasks = [
+        (idx, url, total_count, selected_category, browser_choice, auto_convert_8k)
+        for idx, url in enumerate(urls, 1)
+    ]
 
-        target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(active_cat, "input_videos/general"))
-        os.makedirs(target_dir, exist_ok=True)
+    # Parallel Execution Pool
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        futures = [executor.submit(download_single_url_task, task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            log_res, vid_path = future.result()
+            logs.append(log_res)
+            if vid_path and os.path.exists(vid_path):
+                converted_videos.append(vid_path)
 
-        # High-Speed yt-dlp Command with 16 Concurrent Threads
-        cmd = [
-            "yt-dlp",
-            "--cookies-from-browser", browser_choice,
-            "-N", "16",
-            "-P", f'"{target_dir}"',
-            "-o", '"%(title)s.%(ext)s"',
-            "--restrict-filenames",
-            f'"{url}"'
-        ]
-
-        try:
-            res = subprocess.run(" ".join(cmd), shell=True, capture_output=True, text=True)
-            if res.returncode == 0:
-                logs.append(f"[SUCCESS] Downloaded video into [{active_cat}]")
-                
-                downloaded_files = [
-                    os.path.join(target_dir, f) for f in os.listdir(target_dir) 
-                    if f.endswith(('.mp4', '.mkv', '.webm'))
-                ]
-                if downloaded_files:
-                    latest_file = max(downloaded_files, key=os.path.getmtime)
-                    
-                    if auto_convert_8k:
-                        logs.append(f"[*] [BULLET SPEED] Upscaling '{os.path.basename(latest_file)}' to 8K Resolution...")
-                        converted_file = convert_video_to_8k_bullet_speed(latest_file)
-                        if converted_file:
-                            last_converted_video = converted_file
-                            logs.append(f"[+] 8K Video Ready for Preview: {os.path.basename(converted_file)}")
-                    else:
-                        last_converted_video = latest_file
-            else:
-                logs.append(f"[ERROR] Failed download: {url}")
-        except Exception as e:
-            logs.append(f"[EXCEPTION] Downloader error: {str(e)}")
-
-    return "\n".join(logs), last_converted_video
+    logs.append(f"=== COMPLETED BATCH PROCESS: {len(converted_videos)}/{total_count} Videos Ready ===")
+    
+    # Primary preview video
+    primary_preview = converted_videos[0] if converted_videos else None
+    
+    return "\n".join(logs), primary_preview, converted_videos
 
 
 # ==========================================
@@ -222,7 +245,7 @@ def generate_ai_video_with_learning(prompt: str, category: str, platform: str, d
 
     blueprint = {
         "meta": {
-            "engine": "Apex-Singularity-Master-Kernel-v9.0",
+            "engine": "Apex-Singularity-Master-Kernel-v10.0",
             "category": category,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_platform": platform,
@@ -278,10 +301,47 @@ def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
 # ==========================================
 
 with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
-    gr.Markdown("# ⚡ Apex AI Studio - Master Unified System Interface")
+    gr.Markdown("# ⚡ Apex AI Studio - Multi-Video Scraper, CUDA 8K Converter & Studio Kernel")
 
     with gr.Tabs():
-        # TAB 1: AI LEARNING VIDEO GENERATOR
+        # TAB 1: BULLET MULTI-VIDEO DOWNLOADER & 8K CONVERTER
+        with gr.TabItem("📥 Multi-Video Downloader & CUDA 8K Converter"):
+            with gr.Row():
+                with gr.Column(scale=2):
+                    url_box = gr.Textbox(
+                        label="Target Video URLs (Paste multiple links, one per line)",
+                        placeholder="https://spankbang.com/...\nhttps://pornhub.com/...\nhttps://xvideos.com/...",
+                        lines=8
+                    )
+                    with gr.Row():
+                        category_dropdown = gr.Dropdown(
+                            choices=list(CATEGORY_MAP.keys()),
+                            value="Auto-Detect Category",
+                            label="Content Category Mapping"
+                        )
+                        browser_dropdown = gr.Dropdown(
+                            choices=["firefox", "chrome", "edge"],
+                            value="firefox",
+                            label="Cookie Source Browser"
+                        )
+                    with gr.Row():
+                        parallel_threads_slider = gr.Slider(minimum=1, maximum=8, value=3, step=1, label="Parallel Concurrent Download Workers")
+                        auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Auto-Convert All Downloads to 8K Resolution (CUDA NVENC)")
+
+                    process_btn = gr.Button("🚀 Execute Multi-Video Download & 8K Conversion", variant="primary", size="lg")
+
+                with gr.Column(scale=2):
+                    preview_player = gr.Video(label="🎬 Primary Converted 8K Video Preview", interactive=False)
+                    video_gallery = gr.Gallery(label="📁 Converted 8K Batch Video Outputs", columns=3, height=250)
+                    status_output = gr.Textbox(label="Batch Processing Terminal Output Logs", lines=10, interactive=False)
+
+            process_btn.click(
+                fn=process_multi_video_downloader,
+                inputs=[url_box, category_dropdown, browser_dropdown, auto_8k_checkbox, parallel_threads_slider],
+                outputs=[status_output, preview_player, video_gallery]
+            )
+
+        # TAB 2: AI LEARNING VIDEO GENERATOR
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
@@ -323,40 +383,6 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 fn=generate_ai_video_with_learning,
                 inputs=[prompt_input, gen_category_select, platform_select, duration_hours_slider, style_select, voice_select],
                 outputs=gen_output
-            )
-
-        # TAB 2: BULLET-SPEED DOWNLOADER, 8K CONVERTER & PREVIEW
-        with gr.TabItem("📥 Bullet Downloader, 8K Converter & Preview"):
-            with gr.Row():
-                with gr.Column(scale=2):
-                    url_box = gr.Textbox(
-                        label="Target Video URLs (Paste links, one per line)",
-                        placeholder="https://spankbang.com/...\nhttps://pornhub.com/...",
-                        lines=6
-                    )
-                    with gr.Row():
-                        category_dropdown = gr.Dropdown(
-                            choices=list(CATEGORY_MAP.keys()),
-                            value="Auto-Detect Category",
-                            label="Category Selection (Auto or Manual)"
-                        )
-                        browser_dropdown = gr.Dropdown(
-                            choices=["firefox", "chrome", "edge"],
-                            value="firefox",
-                            label="Cookie Source Browser"
-                        )
-                    
-                    auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Auto-Convert Downloaded Video to 8K Resolution (CUDA Acceleration)")
-                    process_btn = gr.Button("🚀 Download, Convert to 8K & Preview", variant="primary", size="lg")
-
-                with gr.Column(scale=2):
-                    preview_player = gr.Video(label="🎬 Converted 8K Video Result Preview", interactive=False)
-                    status_output = gr.Textbox(label="Processing Output Logs", lines=8, interactive=False)
-
-            process_btn.click(
-                fn=process_download_convert_preview,
-                inputs=[url_box, category_dropdown, browser_dropdown, auto_8k_checkbox],
-                outputs=[status_output, preview_player]
             )
 
         # TAB 3: WORKSPACE MICROSERVICES
