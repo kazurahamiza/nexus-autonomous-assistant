@@ -10,25 +10,43 @@ import asyncio
 import re
 import gc
 import threading
-from PIL import Image, ImageDraw
+import shutil
+import glob
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
 import cv2
 import numpy as np
 import gradio as gr
 
-# Try importing pyperclip for clipboard sniffing automation
+# =========================================================
+# OPTIONAL DEPENDENCY CHECKS & SYSTEM INTEGRATIONS
+# =========================================================
+
 try:
     import pyperclip
     HAS_PYPERCLIP = True
 except ImportError:
     HAS_PYPERCLIP = False
 
-# ==========================================
-# 0. SYSTEM LOGGING & DIRECTORY CONFIGURATION
-# ==========================================
+try:
+    import torch
+    HAS_TORCH = True
+    CUDA_AVAILABLE = torch.cuda.is_available()
+except ImportError:
+    HAS_TORCH = False
+    CUDA_AVAILABLE = False
+
+# =========================================================
+# 0. SYSTEM LOGGING & DIRECTORY HIERARCHY CONFIGURATION
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s: %(message)s"
+    format="[%(asctime)s] [%(levelname)s] [AI-CORE] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("system_pipeline.log", encoding="utf-8")
+    ]
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +54,9 @@ INPUT_DIR = os.path.join(BASE_DIR, "input_videos")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_videos")
 CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
+KEYFRAMES_DIR = os.path.join(DATASET_DIR, "extracted_keyframes")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
+TEMP_DIR = os.path.join(BASE_DIR, "temp_processing")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
 CATEGORY_MAP = {
@@ -48,459 +68,521 @@ CATEGORY_MAP = {
     "General_Datasets": "input_videos/general"
 }
 
-for path in CATEGORY_MAP.values():
-    os.makedirs(os.path.join(BASE_DIR, path), exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(CONVERTED_DIR, exist_ok=True)
-os.makedirs(DATASET_DIR, exist_ok=True)
-os.makedirs(MODELS_DIR, exist_ok=True)
+# Ensure all production paths and category directories exist
+for subpath in CATEGORY_MAP.values():
+    os.makedirs(os.path.join(BASE_DIR, subpath), exist_ok=True)
 
+for dir_path in [INPUT_DIR, OUTPUT_DIR, CONVERTED_DIR, DATASET_DIR, KEYFRAMES_DIR, MODELS_DIR, TEMP_DIR]:
+    os.makedirs(dir_path, exist_ok=True)
 
-# ==========================================
-# 1. CATEGORY ROUTING ENGINE
-# ==========================================
+# Threading locks and execution state management
+DB_LOCK = threading.Lock()
+GPU_LOCK = threading.Lock()
+CLIPBOARD_CACHE = ""
+IS_WATCHER_RUNNING = True
 
-def auto_detect_category_from_url(url: str) -> str:
-    url_lower = url.lower()
-    if any(k in url_lower for k in ["spankbang", "pornhub", "xvideos", "redtube", "adult"]):
-        if any(k in url_lower for k in ["japanese", "jav", "uncensored", "asian"]):
-            return "Adult_Asian_JAV"
-        return "Adult_General_Media"
-    elif "anime" in url_lower or "hentai" in url_lower:
-        return "Anime_Illustrative_LoRA"
-    elif "chinese" in url_lower or "code100" in url_lower:
-        return "CODE100_Chinese_Sentences"
-    return "General_Datasets"
+logging.info(f"Initialized Core Environment. Base Path: {BASE_DIR}")
+logging.info(f"Hardware Acceleration Status -> PyTorch: {HAS_TORCH}, CUDA: {CUDA_AVAILABLE}")
 
+# =========================================================
+# 1. AI TELEMETRY & AUTO-LEARNING ENGINE
+# =========================================================
 
-# ==========================================
-# 2. TELEMETRY ENGINE
-# ==========================================
-
-class AISelfLearningEngine:
-    @staticmethod
-    def load_telemetry():
+def load_telemetry_db():
+    """Thread-safe retrieval of the active telemetry database."""
+    with DB_LOCK:
         if os.path.exists(LEARNING_DB):
             try:
                 with open(LEARNING_DB, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
-        return {"generation_count": 0, "learned_weights": {"contrast": 1.1, "sharpness": 1.2, "saturation": 1.05}, "history": []}
+            except Exception as e:
+                logging.error(f"Failed to load telemetry database: {e}")
+                return {"learned_videos": {}, "system_metadata": {}, "last_updated": time.time()}
+        return {"learned_videos": {}, "system_metadata": {}, "last_updated": time.time()}
 
-    @staticmethod
-    def save_telemetry(data):
-        with open(LEARNING_DB, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-    @classmethod
-    def optimize_prompt(cls, raw_prompt: str, style: str) -> str:
-        telemetry = cls.load_telemetry()
-        telemetry["generation_count"] = telemetry.get("generation_count", 0) + 1
-        enhanced_prompt = f"{raw_prompt}, full body realistic adult model, vivid sensual motion, style={style}, 8k UHD"
-        telemetry["history"].append({"timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "prompt": raw_prompt, "style": style})
-        cls.save_telemetry(telemetry)
-        return enhanced_prompt
-
-
-# ==========================================
-# 3. LOW-MEMORY CUDA 8K CONVERTOR
-# ==========================================
-
-def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
-    if not os.path.exists(input_file_path):
-        return None
-
-    filename = os.path.basename(input_file_path)
-    base_name, _ = os.path.splitext(filename)
-    output_8k_path = os.path.join(CONVERTED_DIR, f"{base_name}_8K.mp4")
-
-    ffmpeg_nvenc_cmd = [
-        "ffmpeg", "-y", "-hwaccel", "cuda",
-        "-i", f'"{input_file_path}"',
-        "-vf", "scale=7680:4320:flags=bilinear",
-        "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll", "-c:a", "copy",
-        f'"{output_8k_path}"'
-    ]
-
-    try:
-        res = subprocess.run(" ".join(ffmpeg_nvenc_cmd), shell=True, capture_output=True, text=True)
-        if res.returncode == 0 and os.path.exists(output_8k_path):
-            return output_8k_path
-        else:
-            cpu_cmd = f'ffmpeg -y -i "{input_file_path}" -vf "scale=7680:4320:flags=lanczos" -c:v libx264 -preset ultrafast -threads 0 -c:a copy "{output_8k_path}"'
-            subprocess.run(cpu_cmd, shell=True, capture_output=True)
-            return output_8k_path if os.path.exists(output_8k_path) else input_file_path
-    except Exception:
-        return input_file_path
-
-
-# ==========================================
-# 4. DOWNLOADHELPER AUTOMATION ENGINE
-# ==========================================
-
-AUTO_DOWNLOAD_QUEUE = []
-DOWNLOAD_HISTORY = set()
-
-def download_single_url_task(args):
-    idx, url, total_count, selected_category, browser_choice, auto_convert_8k = args
-    active_cat = auto_detect_category_from_url(url) if selected_category == "Auto-Detect Category" else selected_category
-    target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(active_cat, "input_videos/general"))
-    os.makedirs(target_dir, exist_ok=True)
-
-    cmd = [
-        "yt-dlp", "--cookies-from-browser", browser_choice, "-N", "16",
-        "-P", f'"{target_dir}"', "-o", '"%(title)s.%(ext)s"', "--restrict-filenames", f'"{url}"'
-    ]
-
-    log_entry = f"[*] [{idx}/{total_count}] DownloadHelper Processing ({active_cat}): {url}\n"
-    converted_file_path = None
-
-    try:
-        res = subprocess.run(" ".join(cmd), shell=True, capture_output=True, text=True)
-        if res.returncode == 0:
-            log_entry += f"[SUCCESS] Downloaded: {url} -> [{active_cat}]\n"
-            downloaded_files = [os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith(('.mp4', '.mkv', '.webm'))]
-            if downloaded_files:
-                latest_file = max(downloaded_files, key=os.path.getmtime)
-                if auto_convert_8k:
-                    log_entry += f"[*] [8K AUTO-CONVERT] Processing: {os.path.basename(latest_file)}...\n"
-                    converted_file_path = convert_video_to_8k_bullet_speed(latest_file)
-                else:
-                    converted_file_path = latest_file
-        else:
-            log_entry += f"[ERROR] Failed: {url}\n"
-    except Exception as e:
-        log_entry += f"[EXCEPTION] Error on {url}: {str(e)}\n"
-
-    return log_entry, converted_file_path
-
-
-def process_multi_video_downloader(url_input: str, selected_category: str, browser_choice: str, auto_convert_8k: bool, max_parallel: int):
-    if not url_input or not url_input.strip():
-        return "[!] Error: No video URLs provided.", None, None
-
-    urls = [u.strip() for u in url_input.splitlines() if u.strip()]
-    logs = [f"=== STARTING DOWNLOADHELPER AUTOMATION BATCH ({len(urls)} URLs) ==="]
-    converted_videos = []
-
-    tasks = [(idx, url, len(urls), selected_category, browser_choice, auto_convert_8k) for idx, url in enumerate(urls, 1)]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
-        futures = [executor.submit(download_single_url_task, task) for task in tasks]
-        for future in concurrent.futures.as_completed(futures):
-            log_res, vid_path = future.result()
-            logs.append(log_res)
-            if vid_path and os.path.exists(vid_path):
-                converted_videos.append(vid_path)
-
-    return "\n".join(logs), (converted_videos[0] if converted_videos else None), converted_videos
-
-
-# Background Clipboard Listener (Video DownloadHelper Sniffer)
-def clipboard_listener_loop():
-    if not HAS_PYPERCLIP:
-        return
-    last_clip = ""
-    while True:
+def save_telemetry_db(data):
+    """Thread-safe persistent storage of telemetry metrics."""
+    with DB_LOCK:
+        data["last_updated"] = time.time()
         try:
-            curr_clip = pyperclip.paste().strip()
-            if curr_clip != last_clip and curr_clip.startswith("http"):
-                last_clip = curr_clip
-                if any(k in curr_clip.lower() for k in ["spankbang", "pornhub", "xvideos", "redtube", "youtube", "vimeo", "adult"]):
-                    if curr_clip not in DOWNLOAD_HISTORY:
-                        DOWNLOAD_HISTORY.add(curr_clip)
-                        logging.info(f"[+] [DOWNLOADHELPER SNIFFER] Captured URL from clipboard: {curr_clip}")
-                        AUTO_DOWNLOAD_QUEUE.append(curr_clip)
-        except Exception:
-            pass
-        time.sleep(2)
+            temp_db_path = LEARNING_DB + ".tmp"
+            with open(temp_db_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            os.replace(temp_db_path, LEARNING_DB)
+        except Exception as e:
+            logging.error(f"Failed to persist telemetry database: {e}")
 
-# Start background clipboard daemon thread
-threading.Thread(target=clipboard_listener_loop, daemon=True).start()
+def compute_frame_descriptors(frame):
+    """Extracts optical, color space, and perceptual sharpness metrics from a frame."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    color_means = frame.mean(axis=(0, 1)).tolist()
+    edges = cv2.Canny(gray, 100, 200)
+    edge_density = float(np.count_nonzero(edges) / (frame.shape[0] * frame.shape[1]))
 
-
-def fetch_clipboard_captured_urls():
-    """Returns captured URLs directly into the URL textbox."""
-    if not HAS_PYPERCLIP:
-        return "pyperclip module not installed. Install via: pip install pyperclip"
-    if not AUTO_DOWNLOAD_QUEUE:
-        return "No new video URLs captured yet. Right-click copy any video link from your browser to capture!"
-    return "\n".join(AUTO_DOWNLOAD_QUEUE)
-
-
-# ==========================================
-# 5. ZERO-RAM-LEAK STORY RENDER ENGINE
-# ==========================================
-
-async def generate_narration_audio(text: str, voice_name: str, output_audio_path: str):
-    try:
-        import edge_tts
-        communicate = edge_tts.Communicate(text, voice_name)
-        await communicate.save(output_audio_path)
-        return True
-    except Exception as e:
-        logging.error(f"[!] TTS Error: {e}")
-        return False
-
-
-def render_single_scene_task_low_mem(args):
-    idx, scene_script, total_scenes, voice, style, timestamp = args
-    temp_audio = os.path.join(OUTPUT_DIR, f"audio_{timestamp}_s{idx}.mp3")
-    temp_raw_mp4 = os.path.join(OUTPUT_DIR, f"raw_{timestamp}_s{idx}.mp4")
-    temp_final_scene = os.path.join(OUTPUT_DIR, f"final_s{idx}_{timestamp}.mp4")
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    audio_ok = loop.run_until_complete(generate_narration_audio(scene_script, voice, temp_audio))
-
-    duration = 6.0
-    if audio_ok and os.path.exists(temp_audio):
-        try:
-            res = subprocess.run(f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_audio}"', shell=True, capture_output=True, text=True)
-            duration = max(3.0, float(res.stdout.strip()))
-        except Exception:
-            duration = 6.0
-
-    fps = 30
-    total_frames = max(30, int(fps * duration))
-    width, height = 1280, 720
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_raw_mp4, fourcc, fps, (width, height))
-
-    c1, c2 = np.array([20, 20, 35], dtype=np.uint8), np.array([80, 50, 110], dtype=np.uint8)
-
-    words = scene_script.split()
-    lines, curr_line = [], ""
-    for w in words:
-        if len(curr_line + " " + w) < 50:
-            curr_line += " " + w
-        else:
-            lines.append(curr_line.strip())
-            curr_line = w
-    if curr_line:
-        lines.append(curr_line.strip())
-
-    for frame_idx in range(total_frames):
-        progress = frame_idx / float(total_frames)
-        interp_color = (c1 * (1 - progress) + c2 * progress).astype(np.uint8)
-        frame = np.full((height, width, 3), interp_color, dtype=np.uint8)
-
-        cx = int(width / 2 + np.sin(progress * 2 * np.pi) * 150)
-        cy = int(height / 2 + np.cos(progress * 2 * np.pi) * 80)
-        cv2.circle(frame, (cx, cy), 200, (int(interp_color[0]*1.3)%255, int(interp_color[1]*1.3)%255, int(interp_color[2]*1.3)%255), -1)
-
-        img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(img_pil)
-
-        draw.text((40, 40), f"ACT / SCENE {idx} of {total_scenes} [{style}]", fill=(255, 215, 0))
-
-        y_offset = height - 160 - (len(lines) * 25)
-        for line in lines[:4]:
-            draw.text((40, y_offset), line, fill=(255, 255, 255))
-            y_offset += 28
-
-        frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-        out.write(frame)
-
-        if frame_idx % 30 == 0:
-            del frame, img_pil, draw
-            gc.collect()
-
-    out.release()
-
-    if audio_ok and os.path.exists(temp_audio):
-        merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -tune ll -c:a aac -shortest "{temp_final_scene}"'
-        res = subprocess.run(merge_cmd, shell=True, capture_output=True)
-        if res.returncode != 0:
-            cpu_merge = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v libx264 -preset ultrafast -c:a aac -shortest "{temp_final_scene}"'
-            subprocess.run(cpu_merge, shell=True, capture_output=True)
-    else:
-        temp_final_scene = temp_raw_mp4
-
-    if os.path.exists(temp_raw_mp4) and os.path.exists(temp_final_scene) and temp_raw_mp4 != temp_final_scene:
-        try:
-            os.remove(temp_raw_mp4)
-        except Exception:
-            pass
-
-    gc.collect()
-    return idx, temp_final_scene if os.path.exists(temp_final_scene) else None
-
-
-def render_full_scale_singularity_story_parallel(full_story: str, voice: str, style: str, target_output_mp4: str) -> str:
-    timestamp = int(time.time())
-    scenes = [s.strip() for s in re.split(r'\n+', full_story) if s.strip()]
-    if not scenes:
-        scenes = [full_story]
-
-    tasks = [(idx, scene, len(scenes), voice, style, timestamp) for idx, scene in enumerate(scenes, 1)]
-    rendered_dict = {}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(render_single_scene_task_low_mem, task) for task in tasks]
-        for future in concurrent.futures.as_completed(futures):
-            idx, sc_path = future.result()
-            if sc_path:
-                rendered_dict[idx] = sc_path
-
-    ordered_files = [rendered_dict[k] for k in sorted(rendered_dict.keys())]
-
-    if len(ordered_files) > 1:
-        concat_txt = os.path.join(OUTPUT_DIR, f"concat_list_{timestamp}.txt")
-        with open(concat_txt, "w", encoding="utf-8") as f:
-            for sf in ordered_files:
-                f.write(f"file '{sf}'\n")
-
-        concat_cmd = f'ffmpeg -y -f concat -safe 0 -i "{concat_txt}" -c copy "{target_output_mp4}"'
-        subprocess.run(concat_cmd, shell=True, capture_output=True)
-    elif ordered_files:
-        target_output_mp4 = ordered_files[0]
-
-    gc.collect()
-    return target_output_mp4
-
-
-def generate_ai_video_with_learning_and_preview(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str, auto_8k: bool):
-    if not prompt or not prompt.strip():
-        return "[!] Error: Story script cannot be empty.", None
-
-    optimized_prompt = AISelfLearningEngine.optimize_prompt(prompt, style)
-    timestamp = int(time.time())
-    raw_movie_path = os.path.join(OUTPUT_DIR, f"full_movie_{category}_{timestamp}.mp4")
-
-    rendered_file = render_full_scale_singularity_story_parallel(prompt, voice, style, raw_movie_path)
-    final_output_file = convert_video_to_8k_bullet_speed(rendered_file) if auto_8k else rendered_file
-
-    blueprint = {
-        "meta": {
-            "engine": "Apex-Singularity-Master-Kernel-v13.0",
-            "category": category,
-            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "target_platform": platform,
-            "output_file": final_output_file
-        },
-        "learned_optimized_prompt": optimized_prompt,
-        "story_script": prompt
+    return {
+        "brightness": round(brightness, 2),
+        "contrast": round(contrast, 2),
+        "sharpness_laplacian": round(laplacian_var, 2),
+        "edge_density": round(edge_density, 4),
+        "mean_bgr": [round(c, 2) for c in color_means]
     }
 
-    blueprint_file = os.path.join(OUTPUT_DIR, f"learned_blueprint_{category}_{timestamp}.json")
-    with open(blueprint_file, "w", encoding="utf-8") as f:
-        json.dump(blueprint, f, indent=2)
+def extract_video_features(file_path):
+    """Extracts video specs and samples metrics across multiple timeline points."""
+    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+        return None
 
-    output_log = f"[+] MEMORY-OPTIMIZED MOVIE RENDERED!\nOutput File: {final_output_file}\nSaved Blueprint: {blueprint_file}"
-    return output_log, final_output_file
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        return None
 
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    duration = frame_count / fps if fps > 0 else 0.0
 
-# ==========================================
-# 6. MICROSERVICES & DASHBOARD
-# ==========================================
+    if frame_count <= 0 or duration == 0:
+        cap.release()
+        return None
 
-def trigger_workspace_module(module_name: str) -> str:
-    script_path = os.path.join(BASE_DIR, f"{module_name}.py")
-    if os.path.exists(script_path):
+    sample_ratios = [0.10, 0.25, 0.50, 0.75, 0.90]
+    frame_descriptors = []
+
+    for ratio in sample_ratios:
+        target_frame = int(frame_count * ratio)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            descriptors = compute_frame_descriptors(frame)
+            frame_descriptors.append(descriptors)
+
+    cap.release()
+    if not frame_descriptors:
+        return None
+
+    avg_brightness = float(np.mean([d["brightness"] for d in frame_descriptors]))
+    avg_contrast = float(np.mean([d["contrast"] for d in frame_descriptors]))
+    avg_sharpness = float(np.mean([d["sharpness_laplacian"] for d in frame_descriptors]))
+    avg_edge_density = float(np.mean([d["edge_density"] for d in frame_descriptors]))
+
+    return {
+        "resolution": f"{width}x{height}",
+        "width": width,
+        "height": height,
+        "aspect_ratio": round(width / height, 2) if height > 0 else 0,
+        "fps": round(fps, 2),
+        "total_frames": frame_count,
+        "duration_sec": round(duration, 2),
+        "file_size_mb": round(os.path.getsize(file_path) / (1024 * 1024), 2),
+        "telemetry_metrics": {
+            "avg_brightness": round(avg_brightness, 2),
+            "avg_contrast": round(avg_contrast, 2),
+            "avg_sharpness": round(avg_sharpness, 2),
+            "avg_edge_density": round(avg_edge_density, 4),
+            "samples_analyzed": len(frame_descriptors)
+        }
+    }
+
+def process_single_video(file_path, category, db):
+    """Processes an unlearned or modified video file, updating the telemetry DB."""
+    file_key = os.path.relpath(file_path, BASE_DIR)
+    mtime = os.path.getmtime(file_path)
+    
+    if file_key in db["learned_videos"]:
+        if db["learned_videos"][file_key].get("mtime") == mtime:
+            return False
+
+    features = extract_video_features(file_path)
+    if features is None:
+        return False
+
+    features["category"] = category
+    features["learned_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    features["mtime"] = mtime
+    
+    db["learned_videos"][file_key] = features
+    return True
+
+def scan_and_learn_all_videos():
+    """Scans all input directories and processes new or updated video files."""
+    db = load_telemetry_db()
+    video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.m4v')
+    new_learned_count = 0
+
+    for cat_name, rel_path in CATEGORY_MAP.items():
+        abs_dir = os.path.join(BASE_DIR, rel_path)
+        if not os.path.exists(abs_dir):
+            continue
+
+        for root, _, files in os.walk(abs_dir):
+            for file in files:
+                if file.lower().endswith(video_extensions):
+                    full_path = os.path.join(root, file)
+                    if process_single_video(full_path, cat_name, db):
+                        new_learned_count += 1
+
+    if new_learned_count > 0:
+        save_telemetry_db(db)
+        logging.info(f"Auto-learning scan complete. Ingested {new_learned_count} asset(s).")
+    
+    return len(db["learned_videos"]), new_learned_count
+
+def background_auto_learning_loop(poll_interval=10):
+    """Background monitoring loop that runs continuously."""
+    logging.info("Auto-Learning background watcher active.")
+    while IS_WATCHER_RUNNING:
         try:
-            res = subprocess.run(f"python {script_path} --test", shell=True, capture_output=True, text=True)
-            return f"[+] {module_name} executed:\n{res.stdout if res.stdout else res.stderr}"
+            scan_and_learn_all_videos()
         except Exception as e:
-            return f"[!] Module Error: {str(e)}"
-    return f"[!] Script {module_name}.py not found."
+            logging.error(f"Error in auto-learning loop: {e}")
+        time.sleep(poll_interval)
 
+watcher_thread = threading.Thread(target=background_auto_learning_loop, daemon=True)
+watcher_thread.start()
 
-def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
-    for port in range(start_port, start_port + max_attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
-    return start_port
+# =========================================================
+# 2. CLIPBOARD SNIFFER AUTOMATION
+# =========================================================
 
+def clipboard_sniffer_loop(poll_interval=2):
+    """Monitors OS clipboard for video paths or URLs to ingest."""
+    global CLIPBOARD_CACHE
+    if not HAS_PYPERCLIP:
+        return
 
-with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
-    gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
+    video_exts = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv')
+    while IS_WATCHER_RUNNING:
+        try:
+            current_clip = pyperclip.paste().strip().strip('"').strip("'")
+            if current_clip and current_clip != CLIPBOARD_CACHE:
+                CLIPBOARD_CACHE = current_clip
+                if os.path.exists(current_clip) and current_clip.lower().endswith(video_exts):
+                    dest_dir = os.path.join(BASE_DIR, CATEGORY_MAP["Auto-Detect Category"])
+                    dest_path = os.path.join(dest_dir, os.path.basename(current_clip))
+                    if not os.path.exists(dest_path):
+                        logging.info(f"Clipboard sniffer ingesting: {current_clip}")
+                        shutil.copy2(current_clip, dest_path)
+                        scan_and_learn_all_videos()
+        except Exception as e:
+            logging.error(f"Error in clipboard sniffer: {e}")
+        time.sleep(poll_interval)
 
-    with gr.Tabs():
-        # TAB 1: VIDEO DOWNLOADHELPER AUTOMATION & CUDA 8K CONVERT ENGINE
-        with gr.TabItem("📥 Video DownloadHelper & CUDA 8K Converter"):
-            with gr.Row():
-                with gr.Column(scale=2):
-                    url_box = gr.Textbox(
-                        label="Target Video URLs (Paste multiple links OR click auto-fetch below)",
-                        placeholder="https://spankbang.com/...\nhttps://pornhub.com/...\nhttps://xvideos.com/...",
-                        lines=8
-                    )
-                    
-                    fetch_clip_btn = gr.Button("📋 Auto-Fetch Right-Clicked Copied Video Links (Video DownloadHelper Mode)", variant="secondary")
+clipboard_thread = threading.Thread(target=clipboard_sniffer_loop, daemon=True)
+clipboard_thread.start()
 
-                    with gr.Row():
-                        category_dropdown = gr.Dropdown(choices=list(CATEGORY_MAP.keys()), value="Auto-Detect Category", label="Category Mapping")
-                        browser_dropdown = gr.Dropdown(choices=["firefox", "chrome", "edge"], value="firefox", label="Cookie Source Browser")
-                    with gr.Row():
-                        parallel_threads_slider = gr.Slider(minimum=1, maximum=8, value=3, step=1, label="Parallel Concurrent Download Workers")
-                        auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Straightaway Auto-Convert Downloads to 8K Resolution (CUDA NVENC)")
+# =========================================================
+# 3. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
+# =========================================================
 
-                    process_btn = gr.Button("🚀 Download Straightaway & Auto-Convert to 8K", variant="primary", size="lg")
+def resize_and_bucket_frame(image, target_size=1024):
+    """Resizes frames into neural network aspect-ratio buckets."""
+    h, w, _ = image.shape
+    aspect = w / h
+    if aspect > 1.0:
+        new_w = target_size
+        new_h = int(target_size / aspect)
+    else:
+        new_h = target_size
+        new_w = int(target_size * aspect)
+    new_w = max((new_w // 64) * 64, 64)
+    new_h = max((new_h // 64) * 64, 64)
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
 
-                with gr.Column(scale=2):
-                    preview_player = gr.Video(label="🎬 Primary Converted 8K Video Preview", interactive=False)
-                    video_gallery = gr.Gallery(label="📁 Converted 8K Batch Video Outputs", columns=3, height=250)
-                    status_output = gr.Textbox(label="Batch Terminal Processing Logs", lines=10, interactive=False)
+def extract_dataset_keyframes(frame_interval=30):
+    """Extracts high-sharpness keyframes from learned videos into dataset buckets."""
+    db = load_telemetry_db()
+    learned = db.get("learned_videos", {})
+    total_saved = 0
 
-            fetch_clip_btn.click(fn=fetch_clipboard_captured_urls, outputs=url_box)
+    for rel_path, meta in learned.items():
+        full_path = os.path.join(BASE_DIR, rel_path)
+        if not os.path.exists(full_path):
+            continue
 
-            process_btn.click(
-                fn=process_multi_video_downloader,
-                inputs=[url_box, category_dropdown, browser_dropdown, auto_8k_checkbox, parallel_threads_slider],
-                outputs=[status_output, preview_player, video_gallery]
-            )
+        cap = cv2.VideoCapture(full_path)
+        if not cap.isOpened():
+            continue
 
-        # TAB 2: AI LEARNING STORY VIDEO GENERATOR
-        with gr.TabItem("🎬 AI Learning Video Generator"):
-            with gr.Row():
-                with gr.Column(scale=2):
-                    prompt_input = gr.Textbox(
-                        label="AI Generation Concept / Full Story & Character Script",
-                        placeholder="Paste your long adult content story script here...",
-                        lines=8
-                    )
-                    with gr.Row():
-                        gen_category_select = gr.Dropdown(choices=list(CATEGORY_MAP.keys())[1:], value="Adult_General_Media", label="Category Mapping")
-                        platform_select = gr.Dropdown(choices=["horizontal_youtube", "vertical_short", "square_social"], value="horizontal_youtube", label="Target Format")
-                    with gr.Row():
-                        style_select = gr.Dropdown(choices=["Cinematic Photorealistic", "Anime / Illustrative", "3D Octane Render", "VTuber Dynamic"], value="Cinematic Photorealistic", label="Style Render Tier")
-                        voice_select = gr.Dropdown(choices=["en-US-ChristopherNeural", "en-US-JennyNeural"], value="en-US-JennyNeural", label="Voice Engine")
-                    
-                    with gr.Row():
-                        duration_hours_slider = gr.Slider(minimum=0.1, maximum=24.0, value=1.0, step=0.5, label="Target Duration (Hours)")
-                        auto_8k_gen_checkbox = gr.Checkbox(value=False, label="⚡ Enable 8K CUDA Upscale (Uncheck for 5x Faster 1080p Generation)")
+        video_name = os.path.splitext(os.path.basename(rel_path))[0]
+        out_folder = os.path.join(KEYFRAMES_DIR, video_name)
+        os.makedirs(out_folder, exist_ok=True)
 
-                    generate_btn = gr.Button("🚀 Generate Full-Scale AI Movie", variant="primary", size="lg")
+        avg_sharp = meta.get("telemetry_metrics", {}).get("avg_sharpness", 100.0)
+        min_sharp = max(50.0, avg_sharp * 0.7)
 
-                with gr.Column(scale=2):
-                    ai_preview_player = gr.Video(label="🎬 Rendered Story Preview", interactive=False)
-                    gen_output = gr.Textbox(label="Output Logs & Blueprint", lines=12, interactive=False)
+        frame_id = 0
+        video_saved = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
 
-            generate_btn.click(
-                fn=generate_ai_video_with_learning_and_preview,
-                inputs=[prompt_input, gen_category_select, platform_select, duration_hours_slider, style_select, voice_select, auto_8k_gen_checkbox],
-                outputs=[gen_output, ai_preview_player]
-            )
+            if frame_id % frame_interval == 0:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                if sharpness >= min_sharp:
+                    bucketed = resize_and_bucket_frame(frame)
+                    cv2.imwrite(os.path.join(out_folder, f"frame_{frame_id:06d}.png"), bucketed)
+                    video_saved += 1
+            frame_id += 1
 
-        # TAB 3: WORKSPACE MICROSERVICES
-        with gr.TabItem("🛠️ Workspace Microservices"):
-            with gr.Row():
-                annotator_btn = gr.Button("🏷️ Run Dataset Auto-Annotator")
-                trends_btn = gr.Button("📈 Run Viral Trend Analyzer")
-                stems_btn = gr.Button("🎵 Run Audio Stem Separator")
-                governor_btn = gr.Button("⚡ Run Hardware Resource Governor")
+        cap.release()
+        total_saved += video_saved
 
-            module_logs = gr.Textbox(label="Sub-Module Output Logs", lines=12, interactive=False)
+    return f"Extraction Complete! Saved {total_saved} keyframes across {len(learned)} learned video(s)."
 
-            annotator_btn.click(fn=lambda: trigger_workspace_module("dataset_auto_annotator"), outputs=module_logs)
-            trends_btn.click(fn=lambda: trigger_workspace_module("viral_trend_analyzer"), outputs=module_logs)
-            stems_btn.click(fn=lambda: trigger_workspace_module("audio_stem_separator"), outputs=module_logs)
-            governor_btn.click(fn=lambda: trigger_workspace_module("kernel_level_governor"), outputs=module_logs)
+def run_auto_tagger():
+    """Generates optical tag files (.txt) alongside extracted dataset keyframes."""
+    color_ranges = {
+        "red": ([0, 50, 50], [10, 255, 255]),
+        "blue": ([100, 50, 50], [130, 255, 255]),
+        "green": ([35, 50, 50], [85, 255, 255]),
+        "yellow": ([20, 50, 50], [35, 255, 255]),
+        "purple": ([130, 50, 50], [160, 255, 255]),
+    }
+
+    image_files = glob.glob(os.path.join(KEYFRAMES_DIR, "**", "*.png"), recursive=True) + \
+                  glob.glob(os.path.join(KEYFRAMES_DIR, "**", "*.jpg"), recursive=True)
+
+    tagged = 0
+    for img_path in image_files:
+        txt_path = os.path.splitext(img_path)[0] + ".txt"
+        if os.path.exists(txt_path):
+            continue
+
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
+
+        h, w, _ = img.shape
+        tags = [os.path.basename(os.path.dirname(img_path)).replace("_", " ")]
+
+        aspect = w / h
+        tags.append("square aspect" if 0.95 <= aspect <= 1.05 else ("landscape" if aspect > 1.05 else "portrait"))
+        tags.append(f"{w}x{h}")
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        brightness = np.mean(gray)
+        tags.append("dark lighting" if brightness < 60 else ("bright lighting" if brightness > 190 else "balanced lighting"))
+
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        for color_name, (lower, upper) in color_ranges.items():
+            mask = cv2.inRange(hsv, np.array(lower, dtype="uint8"), np.array(upper, dtype="uint8"))
+            if (np.count_nonzero(mask) / (w * h)) > 0.15:
+                tags.append(f"{color_name} tone")
+
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(", ".join(tags))
+        tagged += 1
+
+    return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
+
+# =========================================================
+# 4. FFMPEG & HARDWARE ACCELERATED TRANSCODING ENGINE
+# =========================================================
+
+def apply_illustrative_filter(frame):
+    """Bilateral edge cartoon rendering for Anime LoRA dataset prep."""
+    color = cv2.bilateralFilter(frame, d=9, sigmaColor=300, sigmaSpace=300)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.medianBlur(gray, 7)
+    edges = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 2)
+    edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    return cv2.bitwise_and(color, edges_bgr)
+
+def apply_jav_privacy_mask(frame):
+    """Dynamic central region pixelation mask."""
+    h, w, _ = frame.shape
+    box_w, box_h = int(w * 0.4), int(h * 0.4)
+    x1, y1 = int((w - box_w) / 2), int((h - box_h) / 2)
+    
+    roi = frame[y1:y1+box_h, x1:x1+box_w]
+    if roi.size > 0:
+        small = cv2.resize(roi, (16, 16), interpolation=cv2.INTER_LINEAR)
+        frame[y1:y1+box_h, x1:x1+box_w] = cv2.resize(small, (box_w, box_h), interpolation=cv2.INTER_NEAREST)
+    return frame
+
+def process_video_pipeline(input_path, category, target_resolution, upscale_factor, apply_stylize, apply_mask):
+    """Runs transformations, scaling, and video export."""
+    if not input_path or not os.path.exists(input_path):
+        return "Error: Invalid input video file."
+
+    filename = os.path.basename(input_path)
+    output_path = os.path.join(OUTPUT_DIR, f"processed_{int(time.time())}_{filename}")
+
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        return "Error: Unable to open video source stream."
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    out_w = int(orig_w * upscale_factor)
+    out_h = int(orig_h * upscale_factor)
+
+    if target_resolution == "1080p":
+        out_w, out_h = 1920, 1080
+    elif target_resolution == "4K":
+        out_w, out_h = 3840, 2160
+    elif target_resolution == "8K":
+        out_w, out_h = 7680, 4320
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
+
+    frame_count = 0
+    start_time = time.time()
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            break
+
+        if category == "Anime_Illustrative_LoRA" or apply_stylize:
+            frame = apply_illustrative_filter(frame)
+        elif category == "Adult_Asian_JAV" or apply_mask:
+            frame = apply_jav_privacy_mask(frame)
+
+        if (out_w, out_h) != (orig_w, orig_h):
+            frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_CUBIC)
+
+        out.write(frame)
+        frame_count += 1
+
+    cap.release()
+    out.release()
+    gc.collect()
+
+    scan_and_learn_all_videos()
+    elapsed = time.time() - start_time
+    return f"Pipeline Finished! Rendered {frame_count} frames to: {output_path} (Elapsed: {round(elapsed, 2)}s)"
+
+# =========================================================
+# 5. CODE100 CHINESE DATASET PARSER
+# =========================================================
+
+def get_code100_summary():
+    """Parses CODE100 Chinese dataset directory contents."""
+    code100_dir = os.path.join(BASE_DIR, CATEGORY_MAP["CODE100_Chinese_Sentences"])
+    if not os.path.exists(code100_dir):
+        return "CODE100 folder empty or not created."
+
+    files = glob.glob(os.path.join(code100_dir, "*.*"))
+    if not files:
+        return "No Chinese dataset files present in path."
+
+    out = f"CODE100 Datasets Detected: {len(files)} files.\n\n"
+    for f_path in files:
+        out += f"• File: {os.path.basename(f_path)} ({round(os.path.getsize(f_path)/1024, 2)} KB)\n"
+    return out
+
+# =========================================================
+# 6. GRADIO USER INTERFACE
+# =========================================================
+
+def get_telemetry_status():
+    """Generates telemetry status and raw JSON for display."""
+    db = load_telemetry_db()
+    learned = db.get("learned_videos", {})
+    total_videos = len(learned)
+    categories_summary = {}
+    
+    total_duration = 0.0
+    total_mb = 0.0
+
+    for v_info in learned.values():
+        cat = v_info.get("category", "Unknown")
+        categories_summary[cat] = categories_summary.get(cat, 0) + 1
+        total_duration += v_info.get("duration_sec", 0.0)
+        total_mb += v_info.get("file_size_mb", 0.0)
+
+    summary_str = f"=== AI TELEMETRY ENGINE STATUS REPORT ===\n"
+    summary_str += f"Total Video Assets Ingested: {total_videos}\n"
+    summary_str += f"Total Analyzed Duration: {round(total_duration / 60, 2)} minutes\n"
+    summary_str += f"Total Tracked Disk Usage: {round(total_mb / 1024, 2)} GB\n\n"
+    summary_str += "Category Breakdown:\n"
+    
+    for cat, count in categories_summary.items():
+        summary_str += f"  • [{cat}]: {count} file(s)\n"
+    
+    return summary_str, json.dumps(db, indent=2, ensure_ascii=False)
+
+def manual_rescan():
+    total, new_found = scan_and_learn_all_videos()
+    return f"Rescan Complete! Active Total: {total}. Newly Ingested: {new_found}."
+
+custom_css = """
+.container { max-width: 1400px; margin: auto; }
+.gr-button-primary { background: linear-gradient(90deg, #4F46E5 0%, #7C3AED 100%) !important; border: none !important; }
+.status-box { font-family: monospace; font-size: 13px; }
+"""
+
+with gr.Blocks(title="AI Unified Video Processing & Learning Platform", css=custom_css) as demo:
+    gr.Markdown("# 🚀 Unified AI Video Processing & Auto-Learning System")
+    gr.Markdown("Deep Video Telemetry | Continuous Auto-Learning | Keyframe Extraction | Optical Tagger | Transcoding Engine")
+
+    with gr.Tab("📊 Telemetry & Auto-Learning"):
+        with gr.Row():
+            rescan_btn = gr.Button("🔍 Force Rescan & Ingest Now", variant="primary")
+            refresh_btn = gr.Button("🔄 Refresh Metrics Display")
+        
+        status_output = gr.Textbox(label="System Summary Report", lines=8, elem_classes=["status-box"])
+        db_viewer = gr.Code(label="Live ai_learning_telemetry.json Inspection", language="json")
+
+        rescan_btn.click(fn=manual_rescan, inputs=[], outputs=[status_output]).then(
+            fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer]
+        )
+        refresh_btn.click(fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer])
+
+    with gr.Tab("✂️ Keyframe Extraction & Auto-Tagger"):
+        gr.Markdown("### Automated Frame Bucketing & Prompt Captioning")
+        with gr.Row():
+            extract_btn = gr.Button("🖼️ Extract Keyframes from Learned Videos", variant="primary")
+            tag_btn = gr.Button("🏷️ Run Auto-Tagger Engine")
+        
+        pipeline_log = gr.Textbox(label="Execution Logs", lines=6, elem_classes=["status-box"])
+        extract_btn.click(fn=extract_dataset_keyframes, inputs=[], outputs=[pipeline_log])
+        tag_btn.click(fn=run_auto_tagger, inputs=[], outputs=[pipeline_log])
+
+    with gr.Tab("🎬 Video Processing & Scaling"):
+        with gr.Row():
+            with gr.Column():
+                video_input = gr.Video(label="Input Video Asset")
+                category_select = gr.Dropdown(choices=list(CATEGORY_MAP.keys()), value="Auto-Detect Category", label="Category Routing")
+            with gr.Column():
+                resolution_opt = gr.Radio(["Original", "1080p", "4K", "8K"], value="Original", label="Target Resolution Preset")
+                scale_slider = gr.Slider(minimum=1.0, maximum=4.0, value=1.0, step=0.25, label="Custom Scale Multiplier")
+                with gr.Row():
+                    apply_stylize = gr.Checkbox(label="Apply Anime Cartoon Filter", value=False)
+                    apply_mask = gr.Checkbox(label="Apply Privacy Pixelation Mask", value=False)
+
+        process_btn = gr.Button("⚡ Execute Processing Pipeline", variant="primary")
+        proc_output = gr.Textbox(label="Execution Telemetry", lines=4, elem_classes=["status-box"])
+
+        process_btn.click(
+            fn=process_video_pipeline,
+            inputs=[video_input, category_select, resolution_opt, scale_slider, apply_stylize, apply_mask],
+            outputs=[proc_output]
+        )
+
+    with gr.Tab("🈴 CODE100 Chinese Engine"):
+        gr.Markdown("### CODE100 NLP Dataset Manager")
+        code100_btn = gr.Button("📖 Inspect Datasets")
+        code100_output = gr.Textbox(label="Dataset Analysis", lines=10, elem_classes=["status-box"])
+        code100_btn.click(fn=get_code100_summary, inputs=[], outputs=[code100_output])
+
+    demo.load(fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer])
+
+# =========================================================
+# 7. MAIN ENTRY POINT EXECUTION
+# =========================================================
 
 if __name__ == "__main__":
-    target_port = find_available_port(7862)
-    demo.launch(server_name="127.0.0.1", server_port=target_port)
+    logging.info("Starting up unified pipeline engine...")
+    scan_and_learn_all_videos()
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860, share=False, show_error=True)
