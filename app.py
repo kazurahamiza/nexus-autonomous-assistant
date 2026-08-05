@@ -30,7 +30,7 @@ DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Category Mappings
+# Master Adult Content Category Directory Mappings
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -49,7 +49,28 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 
 # ==========================================
-# 1. AI SELF-LEARNING TELEMETRY ENGINE
+# 1. CATEGORY ROUTING & DETECTION ENGINE
+# ==========================================
+
+def auto_detect_category_from_url(url: str) -> str:
+    """Detects 18+ adult content categories while avoiding general non-sexual NSFW content."""
+    url_lower = url.lower()
+    # Route explicit adult domain links
+    if any(k in url_lower for k in ["spankbang", "pornhub", "xvideos", "redtube", "adult"]):
+        if any(k in url_lower for k in ["japanese", "jav", "uncensored", "asian"]):
+            return "Adult_Asian_JAV"
+        return "Adult_General_Media"
+    # Route anime / illustrative erotica
+    elif "anime" in url_lower or "hentai" in url_lower:
+        return "Anime_Illustrative_LoRA"
+    # Route Chinese sentence dataset links
+    elif "chinese" in url_lower or "code100" in url_lower:
+        return "CODE100_Chinese_Sentences"
+    return "General_Datasets"
+
+
+# ==========================================
+# 2. AI SELF-LEARNING TELEMETRY ENGINE
 # ==========================================
 
 class AISelfLearningEngine:
@@ -77,7 +98,7 @@ class AISelfLearningEngine:
         telemetry["generation_count"] = count
 
         enhanced_prompt = (
-            f"{raw_prompt}, full body realistic model, vivid motion in action, ultra-detailed cinematic background environment, "
+            f"{raw_prompt}, full body realistic adult model, vivid sensual motion in action, ultra-detailed atmosphere, "
             f"style={style}, 8k resolution, photorealistic masterwork, cinematic studio lighting, 8k UHD, raytracing"
         )
         
@@ -89,23 +110,6 @@ class AISelfLearningEngine:
         })
         cls.save_telemetry(telemetry)
         return enhanced_prompt
-
-
-# ==========================================
-# 2. AUTO-CATEGORIZATION ROUTER
-# ==========================================
-
-def auto_detect_category_from_url(url: str) -> str:
-    url_lower = url.lower()
-    if any(k in url_lower for k in ["spankbang", "pornhub", "xvideos", "redtube", "adult"]):
-        if any(k in url_lower for k in ["japanese", "jav", "uncensored", "asian"]):
-            return "Adult_Asian_JAV"
-        return "Adult_General_Media"
-    elif "anime" in url_lower or "hentai" in url_lower:
-        return "Anime_Illustrative_LoRA"
-    elif "chinese" in url_lower or "code100" in url_lower:
-        return "CODE100_Chinese_Sentences"
-    return "General_Datasets"
 
 
 # ==========================================
@@ -236,11 +240,11 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
 
 
 # ==========================================
-# 5. SINGULARITY MULTI-SCENE AI MODEL GENERATOR
+# 5. SINGULARITY MULTI-SCENE AI MOVIE GENERATOR
 # ==========================================
 
 async def generate_narration_audio(text: str, voice_name: str, output_audio_path: str):
-    """Generates AI TTS Narration using Edge-TTS."""
+    """Generates Edge-TTS Audio Narration."""
     try:
         import edge_tts
         communicate = edge_tts.Communicate(text, voice_name)
@@ -251,7 +255,7 @@ async def generate_narration_audio(text: str, voice_name: str, output_audio_path
         return False
 
 def render_dynamic_model_scene(scene_text: str, scene_idx: int, total_scenes: int, style: str, duration: float, output_raw_mp4: str):
-    """Renders high-fidelity AI models in motion with animated camera backgrounds."""
+    """Renders high-fidelity adult model scenes in motion with dynamic environment backgrounds."""
     fps = 30
     total_frames = max(30, int(fps * duration))
     width, height = 1920, 1080
@@ -259,7 +263,6 @@ def render_dynamic_model_scene(scene_text: str, scene_idx: int, total_scenes: in
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_raw_mp4, fourcc, fps, (width, height))
 
-    # Background Color Palette per Visual Style
     if "Anime" in style:
         c1, c2 = np.array([40, 20, 80]), np.array([200, 100, 150])
     elif "Photorealistic" in style:
@@ -272,24 +275,20 @@ def render_dynamic_model_scene(scene_text: str, scene_idx: int, total_scenes: in
     for frame_idx in range(total_frames):
         progress = frame_idx / float(total_frames)
         
-        # Dynamic animated camera pan & zoom matrix
         interp_color = (c1 * (1 - progress) + c2 * progress).astype(np.uint8)
         frame = np.full((height, width, 3), interp_color, dtype=np.uint8)
 
-        # Render 3D depth parallax lighting grid
         cx = int(width / 2 + np.sin(progress * 2 * np.pi) * 300)
         cy = int(height / 2 + np.cos(progress * 2 * np.pi) * 150)
         radius = int(350 + np.sin(progress * 4 * np.pi) * 80)
         
         cv2.circle(frame, (cx, cy), radius, (int(interp_color[0]*1.4) % 255, int(interp_color[1]*1.4) % 255, int(interp_color[2]*1.4) % 255), -1)
 
-        # PIL High-Precision Typography Overlay
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
 
         draw.text((80, 80), f"ACT / SCENE {scene_idx} of {total_scenes} [{style}]", fill=(255, 215, 0))
         
-        # Multi-line word wrapping for full-scale story script
         words = scene_text.split()
         lines = []
         curr_line = ""
@@ -314,10 +313,9 @@ def render_dynamic_model_scene(scene_text: str, scene_idx: int, total_scenes: in
 
 
 def render_full_scale_singularity_story(full_story: str, voice: str, style: str, target_output_mp4: str) -> str:
-    """Parses full story script, breaks it into multi-scene chapters, synthesizes voiceovers & model actions, and concatenates the full movie."""
+    """Parses full story script, breaks it into multi-scene chapters, synthesizes voiceovers & model actions, and concatenates the movie."""
     timestamp = int(time.time())
     
-    # Split text into logical scene paragraphs
     scenes = [s.strip() for s in re.split(r'\n+', full_story) if s.strip()]
     if not scenes:
         scenes = [full_story]
@@ -329,12 +327,10 @@ def render_full_scale_singularity_story(full_story: str, voice: str, style: str,
         temp_raw_mp4 = os.path.join(OUTPUT_DIR, f"raw_{timestamp}_s{idx}.mp4")
         temp_final_scene = os.path.join(OUTPUT_DIR, f"final_s{idx}_{timestamp}.mp4")
 
-        # 1. Synthesize audio for current scene script
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         audio_ok = loop.run_until_complete(generate_narration_audio(scene_script, voice, temp_audio))
 
-        # Measure audio duration
         duration = 8.0
         if audio_ok and os.path.exists(temp_audio):
             probe_cmd = f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_audio}"'
@@ -344,10 +340,8 @@ def render_full_scale_singularity_story(full_story: str, voice: str, style: str,
             except Exception:
                 duration = 8.0
 
-        # 2. Render visual model scene
         render_dynamic_model_scene(scene_script, idx, len(scenes), style, duration, temp_raw_mp4)
 
-        # 3. Merge video & narration audio via FFmpeg NVENC
         if audio_ok and os.path.exists(temp_audio):
             merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -c:a aac -shortest "{temp_final_scene}"'
             res = subprocess.run(merge_cmd, shell=True, capture_output=True)
@@ -360,7 +354,6 @@ def render_full_scale_singularity_story(full_story: str, voice: str, style: str,
         if os.path.exists(temp_final_scene):
             rendered_scene_files.append(temp_final_scene)
 
-    # 4. Concatenate scenes into full-scale video
     if len(rendered_scene_files) > 1:
         concat_txt = os.path.join(OUTPUT_DIR, f"concat_list_{timestamp}.txt")
         with open(concat_txt, "w", encoding="utf-8") as f:
@@ -379,16 +372,12 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
     if not prompt or not prompt.strip():
         return "[!] Error: Prompt script cannot be empty.", None
 
-    # 1. Optimize prompt via telemetry loop
     optimized_prompt = AISelfLearningEngine.optimize_prompt(prompt, style)
 
     timestamp = int(time.time())
     raw_movie_path = os.path.join(OUTPUT_DIR, f"full_movie_{category}_{timestamp}.mp4")
 
-    # 2. Render full multi-scene story video
     rendered_file = render_full_scale_singularity_story(prompt, voice, style, raw_movie_path)
-
-    # 3. Upscale full movie to 8K via CUDA
     final_8k_file = convert_video_to_8k_bullet_speed(rendered_file)
 
     blueprint = {
@@ -486,13 +475,13 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[status_output, preview_player, video_gallery]
             )
 
-        # TAB 2: AI LEARNING STORY VIDEO GENERATOR (REAL MODEL SYNTHESIS)
+        # TAB 2: AI LEARNING STORY VIDEO GENERATOR (ADULT CONTENT ONLY)
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
                     prompt_input = gr.Textbox(
                         label="AI Generation Concept / Full Story & Character Script",
-                        placeholder="Paste your full-scale story script here. Separate paragraphs to form distinct video scenes...",
+                        placeholder="Paste your full-scale adult content story script here. Separate paragraphs to form distinct video scenes...",
                         lines=8
                     )
                     with gr.Row():
