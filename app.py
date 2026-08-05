@@ -9,10 +9,13 @@ import re
 import gradio as gr
 
 # ==========================================
-# 0. SYSTEM LOGGING & CATEGORY DIRECTORIES
+# 0. LOGGING & CATEGORY DIRECTORY SETUP
 # ==========================================
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s: %(message)s"
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(BASE_DIR, "input_videos")
@@ -21,6 +24,7 @@ CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
+# Categories for auto-routing and manual selection
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -30,7 +34,6 @@ CATEGORY_MAP = {
     "General_Datasets": "input_videos/general"
 }
 
-# Create required directories
 for path in CATEGORY_MAP.values():
     os.makedirs(os.path.join(BASE_DIR, path), exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -39,11 +42,11 @@ os.makedirs(DATASET_DIR, exist_ok=True)
 
 
 # ==========================================
-# 1. AI SELF-LEARNING & COGNITIVE ENGINE
+# 1. AI SELF-LEARNING TELEMETRY ENGINE
 # ==========================================
 
 class AISelfLearningEngine:
-    """Tracks feedback telemetry and adapts visual generation weights based on learned scores."""
+    """Tracks feedback telemetry and adapts visual generation weights dynamically."""
 
     @staticmethod
     def load_telemetry():
@@ -99,10 +102,11 @@ def auto_detect_category_from_url(url: str) -> str:
 
 
 # ==========================================
-# 3. 8K VIDEO CONVERTOR ENGINE (FFMPEG)
+# 3. BULLET-SPEED CUDA 8K CONVERTOR
 # ==========================================
 
-def convert_video_to_8k(input_file_path: str) -> str:
+def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
+    """NVIDIA CUDA / CPU Multi-Threaded 8K Converter Engine (7680x4320)."""
     if not os.path.exists(input_file_path):
         logging.error(f"[!] File not found for 8K conversion: {input_file_path}")
         return None
@@ -111,33 +115,42 @@ def convert_video_to_8k(input_file_path: str) -> str:
     base_name, _ = os.path.splitext(filename)
     output_8k_path = os.path.join(CONVERTED_DIR, f"{base_name}_8K.mp4")
 
-    logging.info(f"[*] Starting 8K Video Conversion for: {filename}")
+    logging.info(f"[*] [BULLET CONVERTER] Processing 8K upscale: {filename}")
 
-    ffmpeg_cmd = [
+    # NVIDIA NVENC Hardware Accelerated FFmpeg Command
+    ffmpeg_nvenc_cmd = [
         "ffmpeg", "-y",
+        "-hwaccel", "cuda",
         "-i", f'"{input_file_path}"',
-        "-vf", "scale=7680:4320:flags=lanczos",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-c:a", "aac",
+        "-vf", "scale=7680:4320:flags=bilinear",
+        "-c:v", "h264_nvenc",
+        "-preset", "p1",
+        "-tune", "ll",
+        "-c:a", "copy",
         f'"{output_8k_path}"'
     ]
 
     try:
-        res = subprocess.run(" ".join(ffmpeg_cmd), shell=True, capture_output=True, text=True)
+        res = subprocess.run(" ".join(ffmpeg_nvenc_cmd), shell=True, capture_output=True, text=True)
         if res.returncode == 0 and os.path.exists(output_8k_path):
-            logging.info(f"[+] 8K Conversion Successful: {output_8k_path}")
+            logging.info(f"[+] [NVENC CUDA SUCCESS] 8K Converted: {output_8k_path}")
             return output_8k_path
         else:
-            return input_file_path
+            # CPU Fallback with all core threads
+            cpu_cmd = (
+                f'ffmpeg -y -i "{input_file_path}" '
+                f'-vf "scale=7680:4320:flags=lanczos" '
+                f'-c:v libx264 -preset ultrafast -threads 0 -c:a copy "{output_8k_path}"'
+            )
+            subprocess.run(cpu_cmd, shell=True, capture_output=True, text=True)
+            return output_8k_path if os.path.exists(output_8k_path) else input_file_path
     except Exception as e:
         logging.error(f"[!] 8K Converter Exception: {e}")
         return input_file_path
 
 
 # ==========================================
-# 4. DOWNLOAD, CONVERT & PREVIEW PIPELINE
+# 4. HIGH-SPEED DOWNLOAD & PREVIEW ENGINE
 # ==========================================
 
 def process_download_convert_preview(url_input: str, selected_category: str, browser_choice: str, auto_convert_8k: bool):
@@ -158,9 +171,11 @@ def process_download_convert_preview(url_input: str, selected_category: str, bro
         target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(active_cat, "input_videos/general"))
         os.makedirs(target_dir, exist_ok=True)
 
+        # High-Speed yt-dlp Command with 16 Concurrent Threads
         cmd = [
             "yt-dlp",
             "--cookies-from-browser", browser_choice,
+            "-N", "16",
             "-P", f'"{target_dir}"',
             "-o", '"%(title)s.%(ext)s"',
             "--restrict-filenames",
@@ -172,13 +187,16 @@ def process_download_convert_preview(url_input: str, selected_category: str, bro
             if res.returncode == 0:
                 logs.append(f"[SUCCESS] Downloaded video into [{active_cat}]")
                 
-                downloaded_files = [os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith(('.mp4', '.mkv', '.webm'))]
+                downloaded_files = [
+                    os.path.join(target_dir, f) for f in os.listdir(target_dir) 
+                    if f.endswith(('.mp4', '.mkv', '.webm'))
+                ]
                 if downloaded_files:
                     latest_file = max(downloaded_files, key=os.path.getmtime)
                     
                     if auto_convert_8k:
-                        logs.append(f"[*] Upscaling '{os.path.basename(latest_file)}' to 8K Resolution...")
-                        converted_file = convert_video_to_8k(latest_file)
+                        logs.append(f"[*] [BULLET SPEED] Upscaling '{os.path.basename(latest_file)}' to 8K Resolution...")
+                        converted_file = convert_video_to_8k_bullet_speed(latest_file)
                         if converted_file:
                             last_converted_video = converted_file
                             logs.append(f"[+] 8K Video Ready for Preview: {os.path.basename(converted_file)}")
@@ -193,7 +211,7 @@ def process_download_convert_preview(url_input: str, selected_category: str, bro
 
 
 # ==========================================
-# 5. GENERATOR & WORKSPACE PIPELINE ACTION
+# 5. AI GENERATOR & WORKSPACE CONTROLLER
 # ==========================================
 
 def generate_ai_video_with_learning(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str):
@@ -204,7 +222,7 @@ def generate_ai_video_with_learning(prompt: str, category: str, platform: str, d
 
     blueprint = {
         "meta": {
-            "engine": "Apex-Singularity-Master-Kernel-v8.0",
+            "engine": "Apex-Singularity-Master-Kernel-v9.0",
             "category": category,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_platform": platform,
@@ -237,7 +255,6 @@ def generate_ai_video_with_learning(prompt: str, category: str, platform: str, d
 
 
 def trigger_workspace_module(module_name: str) -> str:
-    """Invokes workspace sub-modules directly."""
     script_path = os.path.join(BASE_DIR, f"{module_name}.py")
     if os.path.exists(script_path):
         try:
@@ -257,20 +274,20 @@ def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
 
 
 # ==========================================
-# 6. GRADIO UNIFIED STUDIO DASHBOARD
+# 6. GRADIO MASTER DASHBOARD INTERFACE
 # ==========================================
 
-with gr.Blocks(title="Apex AI Studio - Master Studio Kernel") as demo:
-    gr.Markdown("# ⚡ Apex AI Studio - Master All-in-One Studio Dashboard")
+with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
+    gr.Markdown("# ⚡ Apex AI Studio - Master Unified System Interface")
 
     with gr.Tabs():
-        # TAB 1: AI LEARNING GENERATOR
+        # TAB 1: AI LEARNING VIDEO GENERATOR
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
                     prompt_input = gr.Textbox(
                         label="AI Generation Concept / Theme Script",
-                        placeholder="Enter video prompt or theme here...",
+                        placeholder="Enter video prompt or detailed story concept...",
                         lines=5
                     )
                     with gr.Row():
@@ -308,8 +325,8 @@ with gr.Blocks(title="Apex AI Studio - Master Studio Kernel") as demo:
                 outputs=gen_output
             )
 
-        # TAB 2: DOWNLOADER, 8K CONVERTER & PREVIEW
-        with gr.TabItem("📥 Downloader, 8K Converter & Preview"):
+        # TAB 2: BULLET-SPEED DOWNLOADER, 8K CONVERTER & PREVIEW
+        with gr.TabItem("📥 Bullet Downloader, 8K Converter & Preview"):
             with gr.Row():
                 with gr.Column(scale=2):
                     url_box = gr.Textbox(
@@ -329,7 +346,7 @@ with gr.Blocks(title="Apex AI Studio - Master Studio Kernel") as demo:
                             label="Cookie Source Browser"
                         )
                     
-                    auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Auto-Convert Downloaded Video to 8K Resolution")
+                    auto_8k_checkbox = gr.Checkbox(value=True, label="⚡ Auto-Convert Downloaded Video to 8K Resolution (CUDA Acceleration)")
                     process_btn = gr.Button("🚀 Download, Convert to 8K & Preview", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
@@ -342,8 +359,8 @@ with gr.Blocks(title="Apex AI Studio - Master Studio Kernel") as demo:
                 outputs=[status_output, preview_player]
             )
 
-        # TAB 3: WORKSPACE SUB-MODULES & TOOLS
-        with gr.TabItem("🛠️ Workspace Sub-Modules"):
+        # TAB 3: WORKSPACE MICROSERVICES
+        with gr.TabItem("🛠️ Workspace Microservices"):
             gr.Markdown("### Execute Workspace Microservices Directly")
             with gr.Row():
                 annotator_btn = gr.Button("🏷️ Run Dataset Auto-Annotator")
