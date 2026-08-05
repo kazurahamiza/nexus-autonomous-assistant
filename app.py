@@ -24,7 +24,7 @@ CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Category Directory Mappings
+# Content Category Mappings
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -34,7 +34,7 @@ CATEGORY_MAP = {
     "General_Datasets": "input_videos/general"
 }
 
-# Create required directories
+# Create required workplace directories
 for path in CATEGORY_MAP.values():
     os.makedirs(os.path.join(BASE_DIR, path), exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -118,7 +118,6 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
 
     logging.info(f"[*] [CUDA 8K CONVERTER] Processing 8K upscale: {filename}")
 
-    # Hardware-Accelerated NVENC Command
     ffmpeg_nvenc_cmd = [
         "ffmpeg", "-y",
         "-hwaccel", "cuda",
@@ -137,7 +136,6 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
             logging.info(f"[+] [NVENC CUDA SUCCESS] 8K Converted: {output_8k_path}")
             return output_8k_path
         else:
-            # CPU Fallback with all core threads
             cpu_cmd = (
                 f'ffmpeg -y -i "{input_file_path}" '
                 f'-vf "scale=7680:4320:flags=lanczos" '
@@ -217,7 +215,6 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
         for idx, url in enumerate(urls, 1)
     ]
 
-    # Parallel Worker Execution Engine
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
         futures = [executor.submit(download_single_url_task, task) for task in tasks]
         for future in concurrent.futures.as_completed(futures):
@@ -233,16 +230,17 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
 
 
 # ==========================================
-# 5. AI LEARNING GENERATOR WITH PREVIEW
+# 5. FULL AI GENERATOR & RENDER PIPELINE
 # ==========================================
 
 def generate_ai_video_with_learning_and_preview(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str):
     if not prompt or not prompt.strip():
         return "[!] Error: Prompt cannot be empty.", None
 
-    # Optimize prompt via Self-Learning Telemetry Loop
+    # 1. Run prompt through Self-Learning Telemetry Loop
     optimized_prompt = AISelfLearningEngine.optimize_prompt(prompt, style)
 
+    # 2. Build full execution blueprint
     blueprint = {
         "meta": {
             "engine": "Apex-Singularity-Master-Kernel-v10.0",
@@ -265,26 +263,32 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
         ]
     }
 
-    # Save blueprint output JSON
     blueprint_file = os.path.join(OUTPUT_DIR, f"learned_blueprint_{category}_{int(time.time())}.json")
     with open(blueprint_file, "w", encoding="utf-8") as f:
         json.dump(blueprint, f, indent=2)
 
-    # Locate existing converted or downloaded media to feed preview component
+    # 3. Trigger Local AI Rendering Process
+    brain_script = os.path.join(BASE_DIR, "llm_controller_brain.py")
+    if os.path.exists(brain_script):
+        logging.info("[*] Invoking local AI video renderer...")
+        subprocess.run(f'python "{brain_script}"', shell=True, capture_output=True)
+
+    # 4. Fetch latest rendered video or media file for playback preview
     preview_video_path = None
     target_category_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(category, "input_videos/general"))
     
-    existing_videos = [
-        os.path.join(CONVERTED_DIR, f) for f in os.listdir(CONVERTED_DIR) if f.endswith(('.mp4', '.mkv', '.webm'))
-    ] + [
-        os.path.join(target_category_dir, f) for f in os.listdir(target_category_dir) if f.endswith(('.mp4', '.mkv', '.webm'))
-    ]
+    existing_videos = []
+    for d in [CONVERTED_DIR, target_category_dir, INPUT_DIR, OUTPUT_DIR]:
+        if os.path.exists(d):
+            for f in os.listdir(d):
+                if f.endswith(('.mp4', '.mkv', '.webm')):
+                    existing_videos.append(os.path.join(d, f))
 
     if existing_videos:
         preview_video_path = max(existing_videos, key=os.path.getmtime)
 
     output_log = (
-        f"[+] AI LEARNING GENERATOR PIPELINE EXECUTED!\n"
+        f"[+] AI STORY & BLUEPRINT GENERATED SUCCESSFULLY!\n"
         f"Saved Blueprint: {blueprint_file}\n\n"
         f"--- PRODUCTION SCHEMA ---\n"
         f"{json.dumps(blueprint, indent=2)}"
@@ -361,7 +365,7 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[status_output, preview_player, video_gallery]
             )
 
-        # TAB 2: AI LEARNING VIDEO GENERATOR WITH PREVIEW
+        # TAB 2: AI LEARNING VIDEO GENERATOR WITH RENDERED PREVIEW
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
