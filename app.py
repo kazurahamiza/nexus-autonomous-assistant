@@ -18,10 +18,22 @@ import cv2
 import numpy as np
 import gradio as gr
 
-# =========================================================
-# OPTIONAL DEPENDENCY CHECKS & SYSTEM INTEGRATIONS
-# =========================================================
+# Web Scraping & Bulk Downloader Engine Dependencies
+try:
+    import yt_dlp
+    HAS_YTDLP = True
+except ImportError:
+    HAS_YTDLP = False
 
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin
+    HAS_CRAWLER = True
+except ImportError:
+    HAS_CRAWLER = False
+
+# System Extensions
 try:
     import pyperclip
     HAS_PYPERCLIP = True
@@ -65,6 +77,7 @@ KNOWLEDGE_DIR = os.path.join(DATASET_DIR, "knowledge_notes")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_processing")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
+ARCHIVE_FILE = os.path.join(BASE_DIR, "download_archive.txt")
 
 # Master Audit & Second Brain Category Hierarchy
 CATEGORY_MAP = {
@@ -131,7 +144,65 @@ def save_telemetry_db(data):
             logging.error(f"Failed to persist telemetry database: {e}")
 
 # =========================================================
-# 2. SECOND BRAIN TEXT & NOTES INGESTION ENGINE
+# 2. UNIVERSAL DEDUPLICATED WEB CRAWLER & BULK HARVESTER
+# =========================================================
+
+def crawl_and_bulk_download(page_url, target_category="Auto-Detect Category"):
+    """Crawls a target webpage, extracts playable video links, and downloads only unique videos."""
+    if not HAS_YTDLP:
+        return "Error: 'yt-dlp' is not installed. Please run 'pip install yt-dlp' in PowerShell."
+
+    if not page_url or not page_url.strip():
+        return "Please provide a valid webpage URL."
+
+    target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(target_category, "input_videos/auto_detected"))
+    os.makedirs(target_dir, exist_ok=True)
+
+    extracted_urls = set()
+    raw_url = page_url.strip()
+    extracted_urls.add(raw_url)
+
+    # Parse webpage HTML to extract embedded video elements and direct stream links
+    if HAS_CRAWLER:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            response = requests.get(raw_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                for tag in soup.find_all(['video', 'iframe', 'source', 'a']):
+                    src = tag.get('src') or tag.get('href')
+                    if src:
+                        full_link = urljoin(raw_url, src)
+                        if any(ext in full_link.lower() for ext in ['.mp4', '.mkv', '.webm', 'youtube.com', 'vimeo.com', 'youku.com']):
+                            extracted_urls.add(full_link)
+        except Exception as e:
+            logging.warning(f"HTML parsing fallback triggered for {raw_url}: {e}")
+
+    # Configure yt-dlp with a permanent archive ledger to automatically skip duplicate downloads
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': os.path.join(target_dir, '%(title)s.%(ext)s'),
+        'download_archive': ARCHIVE_FILE,
+        'ignoreerrors': True,
+        'no_warnings': True,
+        'quiet': False,
+    }
+
+    downloaded_count = 0
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        for media_url in extracted_urls:
+            try:
+                res = ydl.download([media_url])
+                if res == 0:
+                    downloaded_count += 1
+            except Exception as err:
+                logging.error(f"Failed downloading stream from {media_url}: {err}")
+
+    scan_and_learn_all_videos()
+    return f"Bulk Harvest Complete! Crawled {len(extracted_urls)} stream candidates. Saved new unique videos to '{target_category}'."
+
+# =========================================================
+# 3. SECOND BRAIN TEXT & NOTES INGESTION ENGINE
 # =========================================================
 
 def scan_and_index_text_knowledge():
@@ -206,7 +277,7 @@ def search_second_brain(query_term):
     return f"=== SECOND BRAIN MEMORY MATCHES ({len(results)}) ===\n\n" + "\n\n".join(results)
 
 # =========================================================
-# 3. OPTICAL FEATURE EXTRACTION & AUTO-LEARNING
+# 4. OPTICAL FEATURE EXTRACTION & AUTO-LEARNING
 # =========================================================
 
 def compute_frame_descriptors(frame):
@@ -343,7 +414,7 @@ watcher_thread = threading.Thread(target=background_auto_learning_loop, daemon=T
 watcher_thread.start()
 
 # =========================================================
-# 4. CLIPBOARD SNIFFER AUTOMATION
+# 5. CLIPBOARD SNIFFER AUTOMATION
 # =========================================================
 
 def clipboard_sniffer_loop(poll_interval=2):
@@ -373,7 +444,7 @@ clipboard_thread = threading.Thread(target=clipboard_sniffer_loop, daemon=True)
 clipboard_thread.start()
 
 # =========================================================
-# 5. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
+# 6. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
 # =========================================================
 
 def resize_and_bucket_frame(image, target_size=1024):
@@ -480,7 +551,7 @@ def run_auto_tagger():
     return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
 
 # =========================================================
-# 6. ACTION VIDEO GENERATION PIPELINE (GPU + PROCEDURAL)
+# 7. ACTION VIDEO GENERATION PIPELINE (GPU + PROCEDURAL)
 # =========================================================
 
 def generate_ai_action_video(script_text, init_image, category_target, motion_scale, target_duration_frames):
@@ -591,7 +662,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     return output_path, f"Rendered {total_frames} Action Motion Frames to: {output_path}"
 
 def fetch_local_generated_videos():
-    """Returns a list of tuples containing (Human Readable Title, Full File Path) for output videos."""
+    """Returns a list of tuples containing (Clean Title, Full Path) for output videos."""
     files = glob.glob(os.path.join(OUTPUT_DIR, "*.mp4"))
     if not files:
         return []
@@ -606,7 +677,7 @@ def fetch_local_generated_videos():
     return choices
 
 # =========================================================
-# 7. CODE100 CHINESE DATASET PARSER
+# 8. CODE100 CHINESE DATASET PARSER
 # =========================================================
 
 def get_code100_summary():
@@ -625,7 +696,7 @@ def get_code100_summary():
     return out
 
 # =========================================================
-# 8. GRADIO USER INTERFACE
+# 9. GRADIO USER INTERFACE
 # =========================================================
 
 def get_telemetry_status():
@@ -670,7 +741,31 @@ custom_css = """
 
 with gr.Blocks() as demo:
     gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
-    gr.Markdown("Second Brain Memory | Action Motion Generation | Chinese Storytelling Datasets | Optical Tagger")
+    gr.Markdown("Second Brain Memory | Universal Web Harvester | Action Motion Generation | Chinese Storytelling Datasets")
+
+    with gr.Tab("🌐 Universal Web Crawler & Bulk Downloader"):
+        gr.Markdown("### Automatic Deduplicated Web Page Video Harvester")
+        with gr.Row():
+            webpage_input = gr.Textbox(
+                label="Target Webpage, Channel, or Playlist URL", 
+                placeholder="Paste any website URL (e.g. news page, video gallery, youtube channel, or playlist)...",
+                scale=3
+            )
+            crawl_category = gr.Dropdown(
+                choices=list(CATEGORY_MAP.keys()),
+                value="Audit_Financial_News",
+                label="Target Category Routing",
+                scale=1
+            )
+        
+        bulk_download_btn = gr.Button("🚀 Crawl & Bulk Download Unique Videos", variant="primary")
+        crawl_status_log = gr.Textbox(label="Crawler Progress & Ingestion Status", lines=6, elem_classes=["status-box"])
+
+        bulk_download_btn.click(
+            fn=crawl_and_bulk_download,
+            inputs=[webpage_input, crawl_category],
+            outputs=[crawl_status_log]
+        )
 
     with gr.Tab("📥 Video DownloadHelper & CUDA 8K Converter"):
         gr.Markdown("### Direct Media Export & Batch Downloader")
@@ -775,11 +870,11 @@ with gr.Blocks() as demo:
     demo.load(fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer])
 
 # =========================================================
-# 9. MAIN ENTRY POINT EXECUTION
+# 10. MAIN ENTRY POINT EXECUTION
 # =========================================================
 
 if __name__ == "__main__":
-    logging.info("Starting up Master Second Brain & Video pipeline engine...")
+    logging.info("Starting up Master Second Brain & Universal Web Harvester Engine...")
     scan_and_learn_all_videos()
     demo.queue().launch(
         server_name="0.0.0.0",
