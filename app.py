@@ -9,7 +9,7 @@ import concurrent.futures
 import gradio as gr
 
 # ==========================================
-# 0. LOGGING & CATEGORY DIRECTORY SETUP
+# 0. SYSTEM LOGGING & DIRECTORY CONFIGURATION
 # ==========================================
 
 logging.basicConfig(
@@ -24,7 +24,7 @@ CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Content Category Directory Mappings
+# Master Category Directory Mappings
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -34,6 +34,7 @@ CATEGORY_MAP = {
     "General_Datasets": "input_videos/general"
 }
 
+# Create required directories
 for path in CATEGORY_MAP.values():
     os.makedirs(os.path.join(BASE_DIR, path), exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -115,9 +116,9 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
     base_name, _ = os.path.splitext(filename)
     output_8k_path = os.path.join(CONVERTED_DIR, f"{base_name}_8K.mp4")
 
-    logging.info(f"[*] [CUDA 8K CONVERTER] Upscaling to 8K: {filename}")
+    logging.info(f"[*] [CUDA 8K CONVERTER] Processing 8K upscale: {filename}")
 
-    # Hardware Accelerated NVENC Command
+    # Hardware-Accelerated NVENC Command
     ffmpeg_nvenc_cmd = [
         "ffmpeg", "-y",
         "-hwaccel", "cuda",
@@ -136,7 +137,7 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
             logging.info(f"[+] [NVENC CUDA SUCCESS] 8K Converted: {output_8k_path}")
             return output_8k_path
         else:
-            # CPU Fallback
+            # CPU Fallback with all core threads
             cpu_cmd = (
                 f'ffmpeg -y -i "{input_file_path}" '
                 f'-vf "scale=7680:4320:flags=lanczos" '
@@ -150,7 +151,7 @@ def convert_video_to_8k_bullet_speed(input_file_path: str) -> str:
 
 
 # ==========================================
-# 4. MULTI-VIDEO PARALLEL DOWNLOAD ENGINE
+# 4. PARALLEL MULTI-VIDEO DOWNLOAD PIPELINE
 # ==========================================
 
 def download_single_url_task(args):
@@ -216,7 +217,7 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
         for idx, url in enumerate(urls, 1)
     ]
 
-    # Parallel Execution Pool
+    # Parallel Worker Execution Engine
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
         futures = [executor.submit(download_single_url_task, task) for task in tasks]
         for future in concurrent.futures.as_completed(futures):
@@ -227,20 +228,19 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
 
     logs.append(f"=== COMPLETED BATCH PROCESS: {len(converted_videos)}/{total_count} Videos Ready ===")
     
-    # Primary preview video
     primary_preview = converted_videos[0] if converted_videos else None
-    
     return "\n".join(logs), primary_preview, converted_videos
 
 
 # ==========================================
-# 5. AI GENERATOR & WORKSPACE CONTROLLER
+# 5. AI LEARNING GENERATOR WITH PREVIEW
 # ==========================================
 
-def generate_ai_video_with_learning(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str):
+def generate_ai_video_with_learning_and_preview(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str):
     if not prompt or not prompt.strip():
-        return "[!] Error: Prompt cannot be empty."
+        return "[!] Error: Prompt cannot be empty.", None
 
+    # Optimize prompt via Self-Learning Telemetry Loop
     optimized_prompt = AISelfLearningEngine.optimize_prompt(prompt, style)
 
     blueprint = {
@@ -265,17 +265,37 @@ def generate_ai_video_with_learning(prompt: str, category: str, platform: str, d
         ]
     }
 
+    # Save blueprint output JSON
     blueprint_file = os.path.join(OUTPUT_DIR, f"learned_blueprint_{category}_{int(time.time())}.json")
     with open(blueprint_file, "w", encoding="utf-8") as f:
         json.dump(blueprint, f, indent=2)
 
-    return (
+    # Locate existing converted or downloaded media to feed preview component
+    preview_video_path = None
+    target_category_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(category, "input_videos/general"))
+    
+    existing_videos = [
+        os.path.join(CONVERTED_DIR, f) for f in os.listdir(CONVERTED_DIR) if f.endswith(('.mp4', '.mkv', '.webm'))
+    ] + [
+        os.path.join(target_category_dir, f) for f in os.listdir(target_category_dir) if f.endswith(('.mp4', '.mkv', '.webm'))
+    ]
+
+    if existing_videos:
+        preview_video_path = max(existing_videos, key=os.path.getmtime)
+
+    output_log = (
         f"[+] AI LEARNING GENERATOR PIPELINE EXECUTED!\n"
         f"Saved Blueprint: {blueprint_file}\n\n"
         f"--- PRODUCTION SCHEMA ---\n"
         f"{json.dumps(blueprint, indent=2)}"
     )
 
+    return output_log, preview_video_path
+
+
+# ==========================================
+# 6. WORKSPACE MICROSERVICE UTILITIES
+# ==========================================
 
 def trigger_workspace_module(module_name: str) -> str:
     script_path = os.path.join(BASE_DIR, f"{module_name}.py")
@@ -297,14 +317,14 @@ def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
 
 
 # ==========================================
-# 6. GRADIO MASTER DASHBOARD INTERFACE
+# 7. GRADIO UNIFIED MASTER INTERFACE
 # ==========================================
 
 with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
     gr.Markdown("# ⚡ Apex AI Studio - Multi-Video Scraper, CUDA 8K Converter & Studio Kernel")
 
     with gr.Tabs():
-        # TAB 1: BULLET MULTI-VIDEO DOWNLOADER & 8K CONVERTER
+        # TAB 1: BULLET MULTI-VIDEO DOWNLOADER & CUDA 8K CONVERTER
         with gr.TabItem("📥 Multi-Video Downloader & CUDA 8K Converter"):
             with gr.Row():
                 with gr.Column(scale=2):
@@ -341,7 +361,7 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[status_output, preview_player, video_gallery]
             )
 
-        # TAB 2: AI LEARNING VIDEO GENERATOR
+        # TAB 2: AI LEARNING VIDEO GENERATOR WITH PREVIEW
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
@@ -377,12 +397,13 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                     generate_btn = gr.Button("🚀 Generate via AI Learning Loop", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    gen_output = gr.Textbox(label="AI Learning Telemetry & Blueprint Output", lines=20, interactive=False)
+                    ai_preview_player = gr.Video(label="🎬 Generated Video Result Preview", interactive=False)
+                    gen_output = gr.Textbox(label="AI Learning Telemetry & Blueprint Output", lines=12, interactive=False)
 
             generate_btn.click(
-                fn=generate_ai_video_with_learning,
+                fn=generate_ai_video_with_learning_and_preview,
                 inputs=[prompt_input, gen_category_select, platform_select, duration_hours_slider, style_select, voice_select],
-                outputs=gen_output
+                outputs=[gen_output, ai_preview_player]
             )
 
         # TAB 3: WORKSPACE MICROSERVICES
