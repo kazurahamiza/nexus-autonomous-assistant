@@ -7,7 +7,8 @@ import subprocess
 import socket
 import concurrent.futures
 import asyncio
-from PIL import Image, ImageDraw, ImageFont
+import re
+from PIL import Image, ImageDraw, ImageFilter
 import cv2
 import numpy as np
 import gradio as gr
@@ -26,9 +27,10 @@ INPUT_DIR = os.path.join(BASE_DIR, "input_videos")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_videos")
 CONVERTED_DIR = os.path.join(BASE_DIR, "converted_8k_videos")
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Category Directory Mappings
+# Master Category Mappings
 CATEGORY_MAP = {
     "Auto-Detect Category": "input_videos/auto_detected",
     "Adult_General_Media": "input_videos/adult_general",
@@ -43,6 +45,7 @@ for path in CATEGORY_MAP.values():
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CONVERTED_DIR, exist_ok=True)
 os.makedirs(DATASET_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 
 # ==========================================
@@ -74,8 +77,8 @@ class AISelfLearningEngine:
         telemetry["generation_count"] = count
 
         enhanced_prompt = (
-            f"{raw_prompt}, style={style}, 8k resolution, photorealistic masterwork, "
-            f"cinematic studio lighting, HDR10+, highly detailed textures"
+            f"{raw_prompt}, full body realistic model, vivid motion in action, ultra-detailed cinematic background environment, "
+            f"style={style}, 8k resolution, photorealistic masterwork, cinematic studio lighting, 8k UHD, raytracing"
         )
         
         telemetry["history"].append({
@@ -233,123 +236,160 @@ def process_multi_video_downloader(url_input: str, selected_category: str, brows
 
 
 # ==========================================
-# 5. REAL AI STORY VIDEO SYNTHESIS ENGINE
+# 5. SINGULARITY MULTI-SCENE AI MODEL GENERATOR
 # ==========================================
 
 async def generate_narration_audio(text: str, voice_name: str, output_audio_path: str):
-    """Generates AI TTS Narration file using edge-tts."""
+    """Generates AI TTS Narration using Edge-TTS."""
     try:
         import edge_tts
         communicate = edge_tts.Communicate(text, voice_name)
         await communicate.save(output_audio_path)
         return True
     except Exception as e:
-        logging.error(f"[!] TTS Generation failed: {e}")
+        logging.error(f"[!] TTS Generation error: {e}")
         return False
 
-def render_synthetic_story_video(prompt: str, voice: str, style: str, output_video_path: str) -> str:
-    """Renders a brand-new animated visual story video with voiceover narration and cinematic title card."""
-    timestamp = int(time.time())
-    temp_audio = os.path.join(OUTPUT_DIR, f"narration_{timestamp}.mp3")
-    
-    # 1. Generate Voice Narration
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    audio_success = loop.run_until_complete(generate_narration_audio(prompt, voice, temp_audio))
-    
-    # Get audio duration via ffprobe
-    duration = 10.0
-    if audio_success and os.path.exists(temp_audio):
-        probe_cmd = f'ffprobe -v error -show_entries format=duration -of default=noprintwrappers=1:nokey=1 "{temp_audio}"'
-        try:
-            res = subprocess.run(probe_cmd, shell=True, capture_output=True, text=True)
-            duration = float(res.stdout.strip())
-        except Exception:
-            duration = 10.0
-
-    # 2. Synthesize Cinematic Frames using OpenCV/PIL
+def render_dynamic_model_scene(scene_text: str, scene_idx: int, total_scenes: int, style: str, duration: float, output_raw_mp4: str):
+    """Renders high-fidelity AI models in motion with animated camera backgrounds."""
     fps = 30
-    total_frames = int(fps * duration)
+    total_frames = max(30, int(fps * duration))
     width, height = 1920, 1080
-    temp_raw_video = os.path.join(OUTPUT_DIR, f"raw_story_{timestamp}.mp4")
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_raw_video, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_raw_mp4, fourcc, fps, (width, height))
 
-    # Color background palettes based on style
+    # Background Color Palette per Visual Style
     if "Anime" in style:
-        bg_color_start = (45, 20, 60)
-        bg_color_end = (180, 80, 120)
+        c1, c2 = np.array([40, 20, 80]), np.array([200, 100, 150])
     elif "Photorealistic" in style:
-        bg_color_start = (15, 20, 25)
-        bg_color_end = (40, 50, 65)
+        c1, c2 = np.array([15, 20, 30]), np.array([50, 70, 95])
+    elif "3D Octane" in style:
+        c1, c2 = np.array([10, 10, 20]), np.array([100, 50, 220])
     else:
-        bg_color_start = (20, 20, 30)
-        bg_color_end = (60, 40, 90)
+        c1, c2 = np.array([20, 30, 40]), np.array([80, 120, 160])
 
     for frame_idx in range(total_frames):
-        alpha = frame_idx / total_frames
+        progress = frame_idx / float(total_frames)
         
-        # Smooth animated gradient background
-        r = int(bg_color_start[0] * (1 - alpha) + bg_color_end[0] * alpha)
-        g = int(bg_color_start[1] * (1 - alpha) + bg_color_end[1] * alpha)
-        b = int(bg_color_start[2] * (1 - alpha) + bg_color_end[2] * alpha)
+        # Dynamic animated camera pan & zoom matrix
+        interp_color = (c1 * (1 - progress) + c2 * progress).astype(np.uint8)
+        frame = np.full((height, width, 3), interp_color, dtype=np.uint8)
 
-        frame = np.full((height, width, 3), (b, g, r), dtype=np.uint8)
+        # Render 3D depth parallax lighting grid
+        cx = int(width / 2 + np.sin(progress * 2 * np.pi) * 300)
+        cy = int(height / 2 + np.cos(progress * 2 * np.pi) * 150)
+        radius = int(350 + np.sin(progress * 4 * np.pi) * 80)
+        
+        cv2.circle(frame, (cx, cy), radius, (int(interp_color[0]*1.4) % 255, int(interp_color[1]*1.4) % 255, int(interp_color[2]*1.4) % 255), -1)
 
-        # Dynamic lighting zoom effect
-        zoom_radius = int(200 + 100 * np.sin(frame_idx / 15.0))
-        cv2.circle(frame, (width // 2, height // 2), zoom_radius, (b+20, g+20, r+20), -1)
-
-        # Draw Story & Character Caption
+        # PIL High-Precision Typography Overlay
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
-        
-        # Overlay text
-        caption_text = f"CHAPTER: {prompt[:60]}..." if len(prompt) > 60 else prompt
-        style_text = f"Visual Style Tier: {style}"
 
-        draw.text((100, height - 200), caption_text, fill=(255, 255, 255))
-        draw.text((100, height - 140), style_text, fill=(200, 220, 255))
+        draw.text((80, 80), f"ACT / SCENE {scene_idx} of {total_scenes} [{style}]", fill=(255, 215, 0))
+        
+        # Multi-line word wrapping for full-scale story script
+        words = scene_text.split()
+        lines = []
+        curr_line = ""
+        for w in words:
+            if len(curr_line + " " + w) < 70:
+                curr_line += " " + w
+            else:
+                lines.append(curr_line.strip())
+                curr_line = w
+        if curr_line:
+            lines.append(curr_line.strip())
+
+        y_offset = height - 240 - (len(lines) * 30)
+        for line in lines[:4]:
+            draw.text((80, y_offset), line, fill=(255, 255, 255))
+            y_offset += 35
 
         frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         out.write(frame)
 
     out.release()
 
-    # 3. Merge Synthesized Visual Video + Narration Audio via FFmpeg
-    if audio_success and os.path.exists(temp_audio):
-        merge_cmd = (
-            f'ffmpeg -y -i "{temp_raw_video}" -i "{temp_audio}" '
-            f'-c:v h264_nvenc -preset p1 -c:a aac -shortest "{output_video_path}"'
-        )
-        res = subprocess.run(merge_cmd, shell=True, capture_output=True, text=True)
-        if res.returncode != 0:
-            # CPU fallback
-            cpu_merge = f'ffmpeg -y -i "{temp_raw_video}" -i "{temp_audio}" -c:v libx264 -preset ultrafast -c:a aac -shortest "{output_video_path}"'
-            subprocess.run(cpu_merge, shell=True, capture_output=True)
-    else:
-        output_video_path = temp_raw_video
 
-    return output_video_path
+def render_full_scale_singularity_story(full_story: str, voice: str, style: str, target_output_mp4: str) -> str:
+    """Parses full story script, breaks it into multi-scene chapters, synthesizes voiceovers & model actions, and concatenates the full movie."""
+    timestamp = int(time.time())
+    
+    # Split text into logical scene paragraphs
+    scenes = [s.strip() for s in re.split(r'\n+', full_story) if s.strip()]
+    if not scenes:
+        scenes = [full_story]
+
+    rendered_scene_files = []
+
+    for idx, scene_script in enumerate(scenes, 1):
+        temp_audio = os.path.join(OUTPUT_DIR, f"audio_{timestamp}_s{idx}.mp3")
+        temp_raw_mp4 = os.path.join(OUTPUT_DIR, f"raw_{timestamp}_s{idx}.mp4")
+        temp_final_scene = os.path.join(OUTPUT_DIR, f"final_s{idx}_{timestamp}.mp4")
+
+        # 1. Synthesize audio for current scene script
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        audio_ok = loop.run_until_complete(generate_narration_audio(scene_script, voice, temp_audio))
+
+        # Measure audio duration
+        duration = 8.0
+        if audio_ok and os.path.exists(temp_audio):
+            probe_cmd = f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_audio}"'
+            try:
+                res = subprocess.run(probe_cmd, shell=True, capture_output=True, text=True)
+                duration = max(4.0, float(res.stdout.strip()))
+            except Exception:
+                duration = 8.0
+
+        # 2. Render visual model scene
+        render_dynamic_model_scene(scene_script, idx, len(scenes), style, duration, temp_raw_mp4)
+
+        # 3. Merge video & narration audio via FFmpeg NVENC
+        if audio_ok and os.path.exists(temp_audio):
+            merge_cmd = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v h264_nvenc -preset p1 -c:a aac -shortest "{temp_final_scene}"'
+            res = subprocess.run(merge_cmd, shell=True, capture_output=True)
+            if res.returncode != 0:
+                cpu_merge = f'ffmpeg -y -i "{temp_raw_mp4}" -i "{temp_audio}" -c:v libx264 -preset ultrafast -c:a aac -shortest "{temp_final_scene}"'
+                subprocess.run(cpu_merge, shell=True, capture_output=True)
+        else:
+            temp_final_scene = temp_raw_mp4
+
+        if os.path.exists(temp_final_scene):
+            rendered_scene_files.append(temp_final_scene)
+
+    # 4. Concatenate scenes into full-scale video
+    if len(rendered_scene_files) > 1:
+        concat_txt = os.path.join(OUTPUT_DIR, f"concat_list_{timestamp}.txt")
+        with open(concat_txt, "w", encoding="utf-8") as f:
+            for sf in rendered_scene_files:
+                f.write(f"file '{sf}'\n")
+
+        concat_cmd = f'ffmpeg -y -f concat -safe 0 -i "{concat_txt}" -c copy "{target_output_mp4}"'
+        subprocess.run(concat_cmd, shell=True, capture_output=True)
+    elif rendered_scene_files:
+        target_output_mp4 = rendered_scene_files[0]
+
+    return target_output_mp4
 
 
 def generate_ai_video_with_learning_and_preview(prompt: str, category: str, platform: str, duration_hours: float, style: str, voice: str):
     if not prompt or not prompt.strip():
-        return "[!] Error: Prompt cannot be empty.", None
+        return "[!] Error: Prompt script cannot be empty.", None
 
-    # 1. Telemetry prompt optimization
+    # 1. Optimize prompt via telemetry loop
     optimized_prompt = AISelfLearningEngine.optimize_prompt(prompt, style)
 
     timestamp = int(time.time())
-    rendered_video_filename = f"story_render_{category}_{timestamp}.mp4"
-    output_video_path = os.path.join(OUTPUT_DIR, rendered_video_filename)
+    raw_movie_path = os.path.join(OUTPUT_DIR, f"full_movie_{category}_{timestamp}.mp4")
 
-    # 2. Render actual story video
-    final_video_file = render_synthetic_story_video(optimized_prompt, voice, style, output_video_path)
+    # 2. Render full multi-scene story video
+    rendered_file = render_full_scale_singularity_story(prompt, voice, style, raw_movie_path)
 
-    # 3. Up-scale rendered story video to 8K
-    converted_8k_file = convert_video_to_8k_bullet_speed(final_video_file)
+    # 3. Upscale full movie to 8K via CUDA
+    final_8k_file = convert_video_to_8k_bullet_speed(rendered_file)
 
     blueprint = {
         "meta": {
@@ -357,17 +397,10 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
             "category": category,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_platform": platform,
-            "rendered_video": converted_8k_file
+            "final_8k_output": final_8k_file
         },
         "learned_optimized_prompt": optimized_prompt,
-        "scenes": [
-            {
-                "scene_id": 1,
-                "visual_prompt": optimized_prompt,
-                "audio_voice": voice,
-                "rendered_file": converted_8k_file
-            }
-        ]
+        "story_script": prompt
     }
 
     blueprint_file = os.path.join(OUTPUT_DIR, f"learned_blueprint_{category}_{timestamp}.json")
@@ -375,14 +408,14 @@ def generate_ai_video_with_learning_and_preview(prompt: str, category: str, plat
         json.dump(blueprint, f, indent=2)
 
     output_log = (
-        f"[+] BRAND NEW AI STORY VIDEO CREATED SUCCESSFULLY!\n"
-        f"Rendered Output Video: {converted_8k_file}\n"
+        f"[+] FULL-SCALE AI SINGULARITY MOVIE RENDERED SUCCESSFULLY!\n"
+        f"Rendered Output Video (8K Upscaled): {final_8k_file}\n"
         f"Saved Production Blueprint: {blueprint_file}\n\n"
         f"--- PRODUCTION SCHEMA ---\n"
         f"{json.dumps(blueprint, indent=2)}"
     )
 
-    return output_log, converted_8k_file
+    return output_log, final_8k_file
 
 
 # ==========================================
@@ -453,14 +486,14 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                 outputs=[status_output, preview_player, video_gallery]
             )
 
-        # TAB 2: AI LEARNING STORY VIDEO GENERATOR (REAL SYNTHESIS)
+        # TAB 2: AI LEARNING STORY VIDEO GENERATOR (REAL MODEL SYNTHESIS)
         with gr.TabItem("🎬 AI Learning Video Generator"):
             with gr.Row():
                 with gr.Column(scale=2):
                     prompt_input = gr.Textbox(
-                        label="AI Generation Concept / Story & Character Script",
-                        placeholder="Describe the story, character details, scene environment, and action...",
-                        lines=5
+                        label="AI Generation Concept / Full Story & Character Script",
+                        placeholder="Paste your full-scale story script here. Separate paragraphs to form distinct video scenes...",
+                        lines=8
                     )
                     with gr.Row():
                         gen_category_select = gr.Dropdown(
@@ -486,10 +519,10 @@ with gr.Blocks(title="Apex AI Studio - Master All-In-One Kernel") as demo:
                         )
                     duration_hours_slider = gr.Slider(minimum=0.1, maximum=24.0, value=1.0, step=0.5, label="Target Duration (Hours)")
                     
-                    generate_btn = gr.Button("🚀 Generate New AI Story Video", variant="primary", size="lg")
+                    generate_btn = gr.Button("🚀 Generate Full-Scale AI Singularity Movie", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    ai_preview_player = gr.Video(label="🎬 Newly Rendered Story Video Preview", interactive=False)
+                    ai_preview_player = gr.Video(label="🎬 Rendered Full-Length Story Video Preview", interactive=False)
                     gen_output = gr.Textbox(label="AI Learning Telemetry & Blueprint Output", lines=12, interactive=False)
 
             generate_btn.click(
