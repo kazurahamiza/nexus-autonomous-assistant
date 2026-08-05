@@ -59,8 +59,10 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_processing")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Audit Category Mapping
+# Master Audit & Storytelling Category Mapping
 CATEGORY_MAP = {
+    "Audit_Chinese_Storytelling": "dataset/audit_chinese_storytelling",
+    "Audit_General_Storytelling": "dataset/audit_general_storytelling",
     "Audit_Market_Trends": "dataset/audit_market_trends",
     "Audit_Financial_News": "dataset/audit_financial_news",
     "Audit_Regulatory_Compliance": "dataset/audit_regulatory_compliance",
@@ -85,7 +87,7 @@ GPU_LOCK = threading.Lock()
 CLIPBOARD_CACHE = ""
 IS_WATCHER_RUNNING = True
 
-logging.info(f"Initialized Core Master Audit Environment. Base Path: {BASE_DIR}")
+logging.info(f"Initialized Core Master Environment with Storytelling Modules. Base Path: {BASE_DIR}")
 logging.info(f"Hardware Acceleration Status -> PyTorch: {HAS_TORCH}, CUDA: {CUDA_AVAILABLE}")
 
 # =========================================================
@@ -237,13 +239,13 @@ def scan_and_learn_all_videos():
 
     if new_learned_count > 0:
         save_telemetry_db(db)
-        logging.info(f"Audit auto-learning scan complete. Ingested {new_learned_count} asset(s).")
+        logging.info(f"Auto-learning scan complete. Ingested {new_learned_count} asset(s).")
     
     return len(db.get("learned_videos", {})), new_learned_count
 
 def background_auto_learning_loop(poll_interval=10):
     """Background monitoring loop that runs continuously."""
-    logging.info("Audit Auto-Learning background watcher active.")
+    logging.info("Auto-Learning background watcher active.")
     while IS_WATCHER_RUNNING:
         try:
             scan_and_learn_all_videos()
@@ -343,7 +345,7 @@ def extract_dataset_keyframes(frame_interval=30):
         cap.release()
         total_saved += video_saved
 
-    return f"Audit Keyframe Extraction Complete! Saved {total_saved} frames across {len(learned)} learned asset(s)."
+    return f"Keyframe Extraction Complete! Saved {total_saved} frames across {len(learned)} learned asset(s)."
 
 def run_auto_tagger():
     """Generates optical tag files (.txt) alongside extracted dataset keyframes."""
@@ -389,7 +391,7 @@ def run_auto_tagger():
             f.write(", ".join(tags))
         tagged += 1
 
-    return f"Audit Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
+    return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
 
 # =========================================================
 # 4. TRANSCODING & PROCESSING ENGINE
@@ -511,11 +513,11 @@ def get_telemetry_status():
         total_duration += v_info.get("duration_sec", 0.0)
         total_mb += v_info.get("file_size_mb", 0.0)
 
-    summary_str = f"=== MASTER AUDIT TELEMETRY STATUS REPORT ===\n"
-    summary_str += f"Total Video/Audit Assets Ingested: {total_videos}\n"
+    summary_str = f"=== MASTER AUDIT & STORYTELLING TELEMETRY REPORT ===\n"
+    summary_str += f"Total Video/Media Assets Ingested: {total_videos}\n"
     summary_str += f"Total Analyzed Duration: {round(total_duration / 60, 2)} minutes\n"
     summary_str += f"Total Tracked Disk Usage: {round(total_mb / 1024, 2)} GB\n\n"
-    summary_str += "Audit Category Breakdown:\n"
+    summary_str += "Category Breakdown:\n"
     
     for cat, count in categories_summary.items():
         summary_str += f"  • [{cat}]: {count} asset(s)\n"
@@ -524,7 +526,7 @@ def get_telemetry_status():
 
 def manual_rescan():
     total, new_found = scan_and_learn_all_videos()
-    return f"Audit Rescan Complete! Active Total: {total}. Newly Ingested: {new_found}."
+    return f"Rescan Complete! Active Total: {total}. Newly Ingested: {new_found}."
 
 custom_css = """
 .container { max-width: 1400px; margin: auto; }
@@ -533,15 +535,15 @@ custom_css = """
 """
 
 with gr.Blocks() as demo:
-    gr.Markdown("# 🏛️ Master Audit AI Video & Intelligence System")
-    gr.Markdown("Market Intelligence Audit | Regulatory Telemetry | Keyframe Extraction | Optical Tagger | Transcoding Engine")
+    gr.Markdown("# 🏛️ Master Audit & Chinese Storytelling AI Engine")
+    gr.Markdown("Chinese Storytelling Datasets | Market Telemetry | Keyframe Extraction | Optical Tagger | Transcoding Engine")
 
-    with gr.Tab("📊 Audit Telemetry & Auto-Learning"):
+    with gr.Tab("📊 Telemetry & Auto-Learning"):
         with gr.Row():
-            rescan_btn = gr.Button("🔍 Force Audit Rescan & Ingest Now", variant="primary")
+            rescan_btn = gr.Button("🔍 Force Rescan & Ingest Now", variant="primary")
             refresh_btn = gr.Button("🔄 Refresh Metrics Display")
         
-        status_output = gr.Textbox(label="Master Audit Summary Report", lines=8, elem_classes=["status-box"])
+        status_output = gr.Textbox(label="Master Summary Report", lines=8, elem_classes=["status-box"])
         db_viewer = gr.Code(label="Live ai_learning_telemetry.json Inspection", language="json")
 
         rescan_btn.click(fn=manual_rescan, inputs=[], outputs=[status_output]).then(
@@ -549,10 +551,10 @@ with gr.Blocks() as demo:
         )
         refresh_btn.click(fn=get_telemetry_status, inputs=[], outputs=[status_output, db_viewer])
 
-    with gr.Tab("✂️ Audit Keyframe Extraction & Auto-Tagger"):
+    with gr.Tab("✂️ Keyframe Extraction & Auto-Tagger"):
         gr.Markdown("### Automated Frame Bucketing & Optical Captioning")
         with gr.Row():
-            extract_btn = gr.Button("🖼️ Extract Keyframes from Audit Assets", variant="primary")
+            extract_btn = gr.Button("🖼️ Extract Keyframes from Learned Assets", variant="primary")
             tag_btn = gr.Button("🏷️ Run Optical Auto-Tagger")
         
         pipeline_log = gr.Textbox(label="Execution Logs", lines=6, elem_classes=["status-box"])
@@ -563,7 +565,7 @@ with gr.Blocks() as demo:
         with gr.Row():
             with gr.Column():
                 video_input = gr.Video(label="Input Video Asset")
-                category_select = gr.Dropdown(choices=list(CATEGORY_MAP.keys()), value="Audit_Market_Trends", label="Audit Category Routing")
+                category_select = gr.Dropdown(choices=list(CATEGORY_MAP.keys()), value="Audit_Chinese_Storytelling", label="Category Routing")
             with gr.Column():
                 resolution_opt = gr.Radio(["Original", "1080p", "4K", "8K"], value="Original", label="Target Resolution Preset")
                 scale_slider = gr.Slider(minimum=1.0, maximum=4.0, value=1.0, step=0.25, label="Custom Scale Multiplier")
@@ -593,7 +595,7 @@ with gr.Blocks() as demo:
 # =========================================================
 
 if __name__ == "__main__":
-    logging.info("Starting up Master Audit pipeline engine...")
+    logging.info("Starting up Master Audit & Storytelling pipeline engine...")
     scan_and_learn_all_videos()
     demo.queue().launch(
         server_name="0.0.0.0",
