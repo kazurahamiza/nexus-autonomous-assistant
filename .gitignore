@@ -9,3 +9,6 @@ build/
 dist/
 videos/
 input_videos/
+ComfyUI/output/
+ComfyUI/input/
+ComfyUI/models/

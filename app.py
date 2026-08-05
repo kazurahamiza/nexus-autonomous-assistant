@@ -17,6 +17,7 @@ import subprocess
 import shutil
 import sqlite3
 import datetime
+import threading
 import edge_tts
 import yt_dlp
 import gradio as gr
@@ -31,18 +32,13 @@ from diffusers import (
     DDIMScheduler
 )
 
-# Set up logging for tracking system execution
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
-# Ensure FFmpeg is registered in current process path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe")
 
 if os.path.exists(FFMPEG_PATH):
     os.environ["PATH"] = BASE_DIR + os.path.pathsep + os.environ["PATH"]
-    logging.info(f"FFmpeg registered from local path: {FFMPEG_PATH}")
-else:
-    logging.warning("Local ffmpeg.exe not found in root. Falling back to system PATH.")
 
 # ==============================================================================
 # MASTER PATHS & MULTI-DIRECTORY LEARNING TARGETS
@@ -51,14 +47,12 @@ DB_PATH = os.path.abspath("./master_registry.db")
 OUTPUT_DIR = os.path.abspath("./outputs")
 OUTPUT_KNOWLEDGE_FILE = os.path.abspath("./absorbed_data.json")
 
-# Linked Local Learning Directories
 TARGET_LEARNING_DIRS = [
     os.path.abspath("./videos"),
     os.path.abspath("./input_videos"),
     os.path.abspath("./self_learning_brutal_ai/videos")
 ]
 
-# Ensure all target folders exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 for path in TARGET_LEARNING_DIRS:
     os.makedirs(path, exist_ok=True)
@@ -100,65 +94,44 @@ init_db()
 # TRANSLATION & UNFILTERED KEYWORD AUTO-CATEGORIZATION
 # ==============================================================================
 def translate_title_to_english(title):
-    """Translates foreign video titles (Japanese, Chinese, etc.) to English."""
     try:
         translated = GoogleTranslator(source='auto', target='en').translate(title)
         return translated if translated else title
     except Exception as e:
-        logging.warning(f"Title translation fallback: {e}")
         return title
 
 def auto_detect_category_from_title(title):
-    """Scans video title for keywords and assigns matching category without restrictions."""
     title_lower = title.lower()
     
-    # Audit & Technical
-    if any(k in title_lower for k in ["audit", "compliance", "system", "report", "market"]):
+    if any(k in title_lower for k in ["audit", "compliance", "system", "report"]):
         return "System Audit & Compliance"
-    # Documentary & Educational
-    elif any(k in title_lower for k in ["documentary", "history", "educational", "science", "tech"]):
+    elif any(k in title_lower for k in ["documentary", "history", "educational", "science"]):
         return "Documentary & Educational"
-    # 3D CGI & Animation
-    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal", "animation"]):
+    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal"]):
         return "3D Animation & CGI Render"
-    # 2D Anime, Hentai & Manga
-    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration", "cosplay", "uncensored", "無修正"]):
+    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration", "cosplay", "uncensored"]):
         return "2D Anime & Digital Art"
-    # Mature & Live Footage Keywords
-    elif any(k in title_lower for k in ["milf", "amateur", "pov", "anal", "creampie", "blowjob", "jav", "strip", "sexy", "adult", "babe", "girl"]):
+    elif any(k in title_lower for k in ["milf", "amateur", "pov", "anal", "creampie", "blowjob", "jav", "adult"]):
         return "General Adult / Mature Content"
-    # Audio & Storytelling
-    elif any(k in title_lower for k in ["asmr", "audio", "voiceover", "soundtrack"]):
+    elif any(k in title_lower for k in ["asmr", "audio", "voiceover"]):
         return "ASMR & Voiceover Storytelling"
-    # Film & Drama
-    elif any(k in title_lower for k in ["movie", "film", "cinematic", "trailer", "drama"]):
-        return "Cinematic Film & Drama"
     else:
         return "General AI Production"
 
 # ==============================================================================
-# METADATA EXTRACTION & DUAL-FILE LEARNING INDEXER
+# METADATA EXTRACTION & INDEXER
 # ==============================================================================
 def get_video_metadata(file_path):
-    """Extracts stream and container metadata using FFprobe."""
     try:
-        cmd = [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            file_path
-        ]
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             return json.loads(result.stdout)
-    except Exception as e:
-        logging.error(f"FFprobe extraction error for {file_path}: {e}")
+    except Exception:
+        pass
     return {}
 
 def index_video_file(file_path, category="Learned Asset"):
-    """Extracts metadata, logs to SQLite database, and appends to absorbed_data.json."""
     filename = os.path.basename(file_path)
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     duration = 0.0
@@ -178,23 +151,15 @@ def index_video_file(file_path, category="Learned Asset"):
     except Exception as e:
         logging.warning(f"Metadata extraction error: {e}")
 
-    # 1. Save to SQLite DB
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO assets (filename, filepath, category, timestamp)
-        VALUES (?, ?, ?, ?)
-    ''', (filename, file_path, category, now_str))
-
-    cursor.execute('''
-        INSERT INTO learned_dataset (timestamp, filename, file_path, category, duration_sec, resolution)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (now_str, filename, file_path, category, duration, resolution))
-
+    cursor.execute('INSERT INTO assets (filename, filepath, category, timestamp) VALUES (?, ?, ?, ?)', 
+                   (filename, file_path, category, now_str))
+    cursor.execute('INSERT INTO learned_dataset (timestamp, filename, file_path, category, duration_sec, resolution) VALUES (?, ?, ?, ?, ?, ?)', 
+                   (now_str, filename, file_path, category, duration, resolution))
     conn.commit()
     conn.close()
 
-    # 2. Duplicate record into absorbed_data.json
     json_data = []
     if os.path.exists(OUTPUT_KNOWLEDGE_FILE):
         try:
@@ -218,7 +183,6 @@ def index_video_file(file_path, category="Learned Asset"):
         json.dump(json_data, f, indent=4, ensure_ascii=False)
 
 def scan_and_link_all_directories():
-    """Scans all linked folders (videos, input_videos, self_learning_brutal_ai) and indexes unindexed files."""
     total_indexed = 0
     for target_dir in TARGET_LEARNING_DIRS:
         if not os.path.exists(target_dir):
@@ -240,13 +204,25 @@ def scan_and_link_all_directories():
                         index_video_file(full_path, category=cat_tag)
                         total_indexed += 1
 
-    return f"Scan & Sync Complete: Indexed {total_indexed} new video assets into Database & absorbed_data.json."
+    return f"Scan Complete: Indexed {total_indexed} new video assets into Database & absorbed_data.json."
 
-# Run initial directory linking scan on launch
-scan_and_link_all_directories()
+# Real-Time Continuous Directory Background Scanner Thread
+def start_continuous_background_watcher():
+    def watcher_loop():
+        while True:
+            try:
+                scan_and_link_all_directories()
+            except Exception as e:
+                logging.error(f"Watcher loop error: {e}")
+            time.sleep(15) # Runs scan every 15 seconds continuously
+
+    t = threading.Thread(target=watcher_loop, daemon=True)
+    t.start()
+
+start_continuous_background_watcher()
 
 # ==============================================================================
-# DOWNLOADER FUNCTION (AUTO TRANSLATE & AUTO-INDEX)
+# DOWNLOADER FUNCTION (UNRESTRICTED HIGH-SPEED PIPELINE)
 # ==============================================================================
 def download_video(url, selected_category, custom_tag=""):
     if not url:
@@ -259,6 +235,8 @@ def download_video(url, selected_category, custom_tag=""):
         'format': 'bestvideo+bestaudio/best',
         'noplaylist': True,
         'quiet': False,
+        'retries': 10,
+        'fragment_retries': 10,
     }
 
     try:
@@ -282,28 +260,19 @@ def download_video(url, selected_category, custom_tag=""):
         return f"Error downloading video: {str(e)}", None
 
 # ==============================================================================
-# STUDIO GENERATOR LOGIC (1 MINUTE TO 24 HOURS RUNTIME)
+# STUDIO GENERATOR LOGIC
 # ==============================================================================
 def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
     total_seconds = (duration_hours * 3600) + (duration_minutes * 60)
-    if total_seconds < 60:
-        total_seconds = 60
-    if total_seconds > 86400:
-        total_seconds = 86400
+    if total_seconds < 60: total_seconds = 60
+    if total_seconds > 86400: total_seconds = 86400
 
     active_category = custom_tag.strip() if custom_tag.strip() else preset
     formatted_time = str(datetime.timedelta(seconds=total_seconds))
     
-    status = (
-        f"Initialized sequence generation under category: '{active_category}'. "
-        f"Target Runtime: {formatted_time} ({total_seconds} seconds). "
-        f"Seed: {seed}. Learning links active."
-    )
+    status = f"Render profile active: '{active_category}'. Duration: {formatted_time} ({total_seconds}s). Seed: {seed}."
     return status, None
 
-# ==============================================================================
-# DATABASE FETCH HELPERS
-# ==============================================================================
 def get_vault_assets():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -342,47 +311,23 @@ def build_ui():
         "Custom Category"
     ]
 
-    with gr.Blocks(title="Apex AI Studio & Linked Learning Engine") as app:
-        gr.Markdown("# 🎬 Apex AI Studio & Linked Learning Engine")
+    with gr.Blocks(title="Apex AI Studio & Real-Time Learning Engine") as app:
+        gr.Markdown("# 🎬 Apex AI Studio & Real-Time Auto-Learning Engine")
         
         with gr.Tabs():
-            # Tab 1: Studio Generator
             with gr.Tab("Studio Generator"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        preset = gr.Dropdown(
-                            choices=CATEGORIES,
-                            value="System Audit & Compliance",
-                            label="Production Category Preset"
-                        )
-                        custom_tag = gr.Textbox(
-                            label="Custom Category / Tag Override",
-                            placeholder="Type custom tag or category string here..."
-                        )
-                        prompt = gr.Textbox(
-                            lines=3,
-                            label="Image Prompt",
-                            value="A high-tech master audit room filled with glowing holographic data streams..."
-                        )
-                        neg_prompt = gr.Textbox(
-                            lines=3,
-                            label="Negative Prompt",
-                            value="(deformed, distorted, disfigured:1.3), poorly drawn face, poorly drawn hands..."
-                        )
-                        dialogue = gr.Textbox(
-                            lines=2,
-                            label="Voice Dialogue Track",
-                            value="System audit initialized. All neural cores are online and functioning at peak capacity."
-                        )
+                        preset = gr.Dropdown(choices=CATEGORIES, value="System Audit & Compliance", label="Production Category Preset")
+                        custom_tag = gr.Textbox(label="Custom Category / Tag Override", placeholder="Type custom tag or category string here...")
+                        prompt = gr.Textbox(lines=3, label="Image Prompt", value="A high-tech master audit room filled with glowing holographic data streams...")
+                        neg_prompt = gr.Textbox(lines=3, label="Negative Prompt", value="(deformed, distorted, disfigured:1.3), poorly drawn face, poorly drawn hands...")
+                        dialogue = gr.Textbox(lines=2, label="Voice Dialogue Track", value="System audit initialized. All neural cores are online.")
                         
                         gr.Markdown("### Video Target Runtime (1 Minute to 24 Hours)")
                         with gr.Row():
-                            duration_hours = gr.Slider(
-                                minimum=0, maximum=24, value=0, step=1, label="Hours"
-                            )
-                            duration_minutes = gr.Slider(
-                                minimum=1, maximum=59, value=5, step=1, label="Minutes"
-                            )
+                            duration_hours = gr.Slider(minimum=0, maximum=24, value=0, step=1, label="Hours")
+                            duration_minutes = gr.Slider(minimum=1, maximum=59, value=5, step=1, label="Minutes")
 
                         seed = gr.Number(value=42, label="Seed", precision=0)
                         gen_btn = gr.Button("🚀 Generate Video Scene", variant="primary")
@@ -397,20 +342,12 @@ def build_ui():
                     outputs=[gen_status, rendered_video]
                 )
 
-            # Tab 2: Global Video Downloader
             with gr.Tab("Global Video Downloader"):
                 gr.Markdown("### Universal Web Video Extraction Engine")
                 
                 url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
-                cat_dropdown = gr.Dropdown(
-                    choices=CATEGORIES,
-                    value="General AI Production",
-                    label="Assign Category Tag for Indexing"
-                )
-                custom_download_tag = gr.Textbox(
-                    label="Custom Tag (Optional)",
-                    placeholder="Type custom category tag to override auto-tagging..."
-                )
+                cat_dropdown = gr.Dropdown(choices=CATEGORIES, value="General AI Production", label="Assign Category Tag for Indexing")
+                custom_download_tag = gr.Textbox(label="Custom Tag (Optional)", placeholder="Type custom category tag...")
                 download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
                 status_output = gr.Textbox(label="Engine Status")
                 video_output = gr.Video(label="Downloaded Video Preview")
@@ -421,23 +358,16 @@ def build_ui():
                     outputs=[status_output, video_output]
                 )
 
-            # Tab 3: Master Video Vault & Linked Learning Index
             with gr.Tab("Master Video Vault & Learning Index"):
                 gr.Markdown("### Linked Folders Sync & Scan")
-                sync_btn = gr.Button("🔄 Scan & Sync All Local Video Folders (videos, input_videos, self_learning)", variant="secondary")
+                sync_btn = gr.Button("🔄 Manual Force-Sync Local Folders", variant="secondary")
                 sync_log = gr.Textbox(label="Sync Status")
 
                 gr.Markdown("### Asset Registry Index")
-                vault_table = gr.Dataframe(
-                    headers=["Filename", "Filepath", "Category", "Timestamp"],
-                    value=get_vault_assets
-                )
+                vault_table = gr.Dataframe(headers=["Filename", "Filepath", "Category", "Timestamp"], value=get_vault_assets)
                 
-                gr.Markdown("### Learned Dataset Index (Auto-Indexed)")
-                dataset_table = gr.Dataframe(
-                    headers=["Timestamp", "Filename", "File Path", "Category", "Duration (Sec)", "Resolution"],
-                    value=get_learned_dataset
-                )
+                gr.Markdown("### Learned Dataset Index (Real-time Auto-Indexed)")
+                dataset_table = gr.Dataframe(headers=["Timestamp", "Filename", "File Path", "Category", "Duration (Sec)", "Resolution"], value=get_learned_dataset)
                 
                 sync_btn.click(fn=scan_and_link_all_directories, outputs=[sync_log])
                 sync_btn.click(fn=get_vault_assets, outputs=[vault_table])

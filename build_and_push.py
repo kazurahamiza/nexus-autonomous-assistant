@@ -10,15 +10,15 @@ def run_command(cmd, check=True):
         sys.exit(result.returncode)
 
 def main():
-    # 1. Execute ComfyUI Brutal Engine Update
+    # 1. Execute ComfyUI Engine Update
     if os.path.exists("update_comfy.py"):
         print("[*] Launching ComfyUI engine upgrade...")
         run_command("python update_comfy.py", check=False)
 
-    # 2. Install Core System Requirements
-    run_command("pip install pyinstaller psutil deep-translator yt-dlp gradio opencv-python diffusers")
+    # 2. Install/Upgrade System Requirements
+    run_command("pip install --upgrade pyinstaller psutil deep-translator yt-dlp gradio opencv-python diffusers")
 
-    # 3. Secure .gitignore to prevent Git large payload locks
+    # 3. Configure .gitignore
     gitignore_path = ".gitignore"
     ignore_entries = [
         "build/\n", 
@@ -30,7 +30,8 @@ def main():
         "input_videos/\n",
         "ComfyUI/output/\n",
         "ComfyUI/input/\n",
-        "ComfyUI/models/\n"
+        "ComfyUI/models/\n",
+        "autostart_system.log\n"
     ]
 
     existing_content = ""
@@ -43,9 +44,7 @@ def main():
             if entry not in existing_content:
                 f.write(entry)
 
-    print("[+] .gitignore configured.")
-
-    # 4. Compile Standalone Application
+    # 4. Compile Application Executable
     print("[*] Compiling app.py into ApexAIVideoStudio.exe...")
     pyinstaller_cmd = (
         "pyinstaller --noconfirm --onedir --console "
@@ -55,18 +54,18 @@ def main():
     )
     run_command(pyinstaller_cmd)
 
-    # 5. Commit and Push to Git Remote
-    print("[*] Staging source code changes for Git...")
-    run_command("git add app.py update_comfy.py build_and_push.py .gitignore")
+    # 5. Git Stage, Commit, and Push
+    print("[*] Staging all scripts and configurations...")
+    run_command("git add app.py update_comfy.py build_and_push.py autostart_daemon.py run_autostart.bat .gitignore")
     
-    commit_msg = '"Master system update & ComfyUI peak engine upgrade"'
+    commit_msg = '"Master auto-start daemon integration & peak update pipeline"'
     print(f"[*] Committing changes: {commit_msg}")
     run_command(f"git commit -m {commit_msg}", check=False)
 
-    print("[*] Pushing source code to remote GitHub repository...")
+    print("[*] Pushing to remote repository...")
     run_command("git push origin main")
 
-    print("[+] Master build, ComfyUI update, and Git push sequence complete.")
+    print("[+] Master auto-startup deployment complete.")
 
 if __name__ == "__main__":
     main()
