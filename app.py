@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import gradio as gr
 
-# Web Scraping & Bulk Downloader Engine Dependencies
+# Fast Web Scraping & Bulk Downloader Engine Dependencies
 try:
     import yt_dlp
     HAS_YTDLP = True
@@ -144,48 +144,56 @@ def save_telemetry_db(data):
             logging.error(f"Failed to persist telemetry database: {e}")
 
 # =========================================================
-# 2. UNIVERSAL DEDUPLICATED WEB CRAWLER & BULK HARVESTER
+# 2. HYPER-SPEED DEDUPLICATED WEB CRAWLER & HARVESTER
 # =========================================================
 
 def crawl_and_bulk_download(page_url, target_category="Auto-Detect Category"):
-    """Crawls a target webpage, extracts playable video links, and downloads only unique videos."""
+    """Crawls target webpages (including SpankBang channels) and downloads unique videos."""
     if not HAS_YTDLP:
-        return "Error: 'yt-dlp' is not installed. Please run 'pip install yt-dlp' in PowerShell."
+        return "Error: 'yt-dlp' is not installed. Run 'pip install yt-dlp' in PowerShell."
 
     if not page_url or not page_url.strip():
-        return "Please provide a valid webpage URL."
+        return "Please provide a valid webpage or playlist URL."
 
     target_dir = os.path.join(BASE_DIR, CATEGORY_MAP.get(target_category, "input_videos/auto_detected"))
     os.makedirs(target_dir, exist_ok=True)
 
     extracted_urls = set()
     raw_url = page_url.strip()
-    extracted_urls.add(raw_url)
 
-    # Parse webpage HTML to extract embedded video elements and direct stream links
+    # Advanced HTML Link Extractor (Auto-detects channel grids)
     if HAS_CRAWLER:
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             response = requests.get(raw_url, headers=headers, timeout=10)
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
-                for tag in soup.find_all(['video', 'iframe', 'source', 'a']):
-                    src = tag.get('src') or tag.get('href')
-                    if src:
-                        full_link = urljoin(raw_url, src)
-                        if any(ext in full_link.lower() for ext in ['.mp4', '.mkv', '.webm', 'youtube.com', 'vimeo.com', 'youku.com']):
-                            extracted_urls.add(full_link)
+                for tag in soup.find_all('a', href=True):
+                    href = tag['href']
+                    full_link = urljoin(raw_url, href)
+                    
+                    # SpankBang video link extraction
+                    if "spankbang.com" in raw_url and "/video/" in href:
+                        extracted_urls.add(full_link)
+                    # General video page link extraction
+                    elif any(ext in full_link.lower() for ext in ['.mp4', '.mkv', '.webm', 'youtube.com/watch', 'vimeo.com', 'youku.com']):
+                        extracted_urls.add(full_link)
         except Exception as e:
             logging.warning(f"HTML parsing fallback triggered for {raw_url}: {e}")
 
-    # Configure yt-dlp with a permanent archive ledger to automatically skip duplicate downloads
+    # Fallback to standard raw URL if no sub-links extracted
+    if not extracted_urls:
+        extracted_urls.add(raw_url)
+
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(target_dir, '%(title)s.%(ext)s'),
         'download_archive': ARCHIVE_FILE,
+        'concurrent_fragment_downloads': 16,
         'ignoreerrors': True,
         'no_warnings': True,
         'quiet': False,
+        'nocheckcertificate': True,
     }
 
     downloaded_count = 0
@@ -199,14 +207,14 @@ def crawl_and_bulk_download(page_url, target_category="Auto-Detect Category"):
                 logging.error(f"Failed downloading stream from {media_url}: {err}")
 
     scan_and_learn_all_videos()
-    return f"Bulk Harvest Complete! Crawled {len(extracted_urls)} stream candidates. Saved new unique videos to '{target_category}'."
+    return f"Harvest Complete! Extracted {len(extracted_urls)} video link(s). Saved unique videos into '{target_category}'."
 
 # =========================================================
 # 3. SECOND BRAIN TEXT & NOTES INGESTION ENGINE
 # =========================================================
 
 def scan_and_index_text_knowledge():
-    """Scans and indexes raw text notes, audit briefs, and scripts into the second brain."""
+    """Scans and indexes text notes, audit briefs, and scripts into the second brain."""
     db = load_telemetry_db()
     db.setdefault("knowledge_base", {})
     
@@ -258,13 +266,13 @@ def search_second_brain(query_term):
     query_lower = query_term.lower()
     results = []
     
-    # 1. Search Video Assets
+    # Search Video Assets
     for path, meta in db.get("learned_videos", {}).items():
         cat = meta.get("category", "")
         if query_lower in path.lower() or query_lower in cat.lower():
             results.append(f"📹 [VIDEO ASSET] {path}\n    └─ Category: {cat} | Res: {meta.get('resolution')} | Duration: {meta.get('duration_sec')}s | Size: {meta.get('file_size_mb')} MB")
             
-    # 2. Search Text Knowledge Notes
+    # Search Text Knowledge Notes
     for path, meta in db.get("knowledge_base", {}).items():
         keywords = meta.get("top_keywords", [])
         snippet = meta.get("snippet", "")
@@ -299,7 +307,7 @@ def compute_frame_descriptors(frame):
     }
 
 def extract_video_features(file_path):
-    """Extracts video specs and samples metrics across multiple timeline points."""
+    """Extracts video specs and samples metrics across timeline points."""
     if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
         return None
 
@@ -377,7 +385,7 @@ def process_single_video(file_path, category, db):
     return True
 
 def scan_and_learn_all_videos():
-    """Scans all input directories and processes new or updated video files."""
+    """Scans input directories and processes video files into database."""
     db = load_telemetry_db()
     video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.m4v')
     new_learned_count = 0
@@ -444,11 +452,11 @@ clipboard_thread = threading.Thread(target=clipboard_sniffer_loop, daemon=True)
 clipboard_thread.start()
 
 # =========================================================
-# 6. DATASET CRAWLER, EXTRACTION & AUTO-TAGGER ENGINES
+# 6. DATASET EXTRACTION & OPTICAL AUTO-TAGGER
 # =========================================================
 
 def resize_and_bucket_frame(image, target_size=1024):
-    """Resizes frames into neural network aspect-ratio buckets."""
+    """Resizes frames into aspect-ratio buckets."""
     h, w, _ = image.shape
     aspect = w / h
     if aspect > 1.0:
@@ -462,7 +470,7 @@ def resize_and_bucket_frame(image, target_size=1024):
     return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
 
 def extract_dataset_keyframes(frame_interval=30):
-    """Extracts high-sharpness keyframes from learned videos into dataset buckets."""
+    """Extracts keyframes from learned videos into dataset buckets."""
     db = load_telemetry_db()
     learned = db.get("learned_videos", {})
     total_saved = 0
@@ -505,7 +513,7 @@ def extract_dataset_keyframes(frame_interval=30):
     return f"Keyframe Extraction Complete! Saved {total_saved} frames across {len(learned)} learned asset(s)."
 
 def run_auto_tagger():
-    """Generates optical tag files (.txt) alongside extracted dataset keyframes."""
+    """Generates optical tag files (.txt) alongside extracted keyframes."""
     color_ranges = {
         "red": ([0, 50, 50], [10, 255, 255]),
         "blue": ([100, 50, 50], [130, 255, 255]),
@@ -551,11 +559,11 @@ def run_auto_tagger():
     return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
 
 # =========================================================
-# 7. ACTION VIDEO GENERATION PIPELINE (GPU + PROCEDURAL)
+# 7. HIGH-SPEED ACTION VIDEO GENERATION (GPU + PROCEDURAL)
 # =========================================================
 
 def generate_ai_action_video(script_text, init_image, category_target, motion_scale, target_duration_frames):
-    """Executes dynamic video synthesis with action movement parameters."""
+    """Executes dynamic video synthesis with accelerated motion rendering parameters."""
     if not script_text or script_text.strip() == "":
         script_text = "Master Audit Cinematic Storytelling, dynamic camera action movement, real models, 8k background"
 
@@ -567,16 +575,18 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         elif isinstance(init_image, Image.Image):
             init_image.save(temp_img_path)
 
-    # 1. GPU Diffusion Pipeline Execution (If PyTorch + CUDA + Diffusers active)
+    # 1. GPU Diffusion Pipeline (Accelerated float16 + VAE Slicing)
     if HAS_TORCH and CUDA_AVAILABLE and HAS_DIFFUSERS:
         try:
-            logging.info("Executing GPU Stable Video Diffusion Pipeline...")
+            logging.info("Executing GPU Stable Video Diffusion Pipeline with FP16 Acceleration...")
             pipe = StableVideoDiffusionPipeline.from_pretrained(
                 "stabilityai/stable-video-diffusion-img2vid-xt",
                 torch_dtype=torch.float16,
                 variant="fp16"
             )
             pipe.enable_model_cpu_offload()
+            if hasattr(pipe, "enable_vae_slicing"):
+                pipe.enable_vae_slicing()
 
             if temp_img_path and os.path.exists(temp_img_path):
                 img_input = Image.open(temp_img_path).convert("RGB").resize((1024, 576))
@@ -603,11 +613,11 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
             writer.release()
 
             scan_and_learn_all_videos()
-            return out_path, f"GPU Diffusion Video Generation Complete! Exported to: {out_path}"
+            return out_path, f"GPU Action Video Generation Complete! Exported to: {out_path}"
         except Exception as e:
             logging.error(f"GPU Diffusion Execution Fallback: {e}")
 
-    # 2. High-Performance Procedural Action Movement Engine (Local Fallback)
+    # 2. Optimized Procedural Action Render Engine (Multithreaded Fallback)
     output_filename = f"action_story_{int(time.time())}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
     fps = 30
@@ -741,10 +751,10 @@ custom_css = """
 
 with gr.Blocks() as demo:
     gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
-    gr.Markdown("Second Brain Memory | Universal Web Harvester | Action Motion Generation | Chinese Storytelling Datasets")
+    gr.Markdown("Second Brain Memory | Universal Hyper-Speed Web Harvester | Action Motion Generation | Optical Tagger")
 
     with gr.Tab("🌐 Universal Web Crawler & Bulk Downloader"):
-        gr.Markdown("### Automatic Deduplicated Web Page Video Harvester")
+        gr.Markdown("### Automatic Deduplicated Web Page Video Harvester (Multi-Threaded 16x)")
         with gr.Row():
             webpage_input = gr.Textbox(
                 label="Target Webpage, Channel, or Playlist URL", 
@@ -874,7 +884,7 @@ with gr.Blocks() as demo:
 # =========================================================
 
 if __name__ == "__main__":
-    logging.info("Starting up Master Second Brain & Universal Web Harvester Engine...")
+    logging.info("Starting up Master Second Brain Engine...")
     scan_and_learn_all_videos()
     demo.queue().launch(
         server_name="0.0.0.0",
