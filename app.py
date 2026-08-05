@@ -1,422 +1,264 @@
-# ==============================================================================
-# ENVIRONMENT OVERRIDES FOR TRANSFORMERS & TORCHVISION FIX
-# ==============================================================================
 import os
-os.environ["USE_TORCH"] = "1"
-os.environ["TRANSFORMERS_NO_TORCHVISION"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-
 import sys
-import time
 import json
-import torch
-import cv2
-import asyncio
+import time
 import logging
-import requests
-import numpy as np
 import subprocess
-import shutil
-import sqlite3
-import datetime
-import threading
-import edge_tts
-import yt_dlp
+import socket
 import gradio as gr
-import PIL.Image
-from PIL import ImageFilter
-from mutagen.mp3 import MP3
-from deep_translator import GoogleTranslator
 
-from diffusers import (
-    StableDiffusionControlNetPipeline,
-    ControlNetModel,
-    DDIMScheduler
+# ==========================================
+# 0. SYSTEM LOGGING & ENVIRONMENT SETUP
+# ==========================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s: %(message)s"
 )
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe")
+INPUT_DIR = os.path.join(BASE_DIR, "input_videos")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output_videos")
+DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 
-if os.path.exists(FFMPEG_PATH):
-    os.environ["PATH"] = BASE_DIR + os.path.pathsep + os.environ["PATH"]
-
-CUDA_AVAILABLE = torch.cuda.is_available()
-DEVICE_NAME = torch.cuda.get_device_name(0) if CUDA_AVAILABLE else "CPU Mode"
-
-# ==============================================================================
-# MASTER PATHS & MULTI-DIRECTORY LEARNING TARGETS
-# ==============================================================================
-DB_PATH = os.path.abspath("./master_registry.db")
-OUTPUT_DIR = os.path.abspath("./outputs")
-VIDEOS_DIR = os.path.abspath("./videos")
-OUTPUT_KNOWLEDGE_FILE = os.path.abspath("./absorbed_data.json")
-
-TARGET_LEARNING_DIRS = [
-    os.path.abspath("./videos"),
-    os.path.abspath("./input_videos"),
-    os.path.abspath("./self_learning_brutal_ai/videos")
-]
-
+os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(VIDEOS_DIR, exist_ok=True)
-for path in TARGET_LEARNING_DIRS:
-    os.makedirs(path, exist_ok=True)
+os.makedirs(DATASET_DIR, exist_ok=True)
 
-SUPPORTED_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
 
-# ==============================================================================
-# DATABASE SETUP
-# ==============================================================================
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS assets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            filepath TEXT,
-            category TEXT,
-            timestamp DATETIME
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS learned_dataset (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            filename TEXT,
-            file_path TEXT,
-            category TEXT,
-            duration_sec REAL,
-            resolution TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# ==========================================
+# 1. COGNITIVE LLM DIRECTOR & ENGINE
+# ==========================================
 
-init_db()
+class SingularityLLMDirector:
+    """Master Cognitive Controller: Translates user prompts into multi-stage video generation blueprints."""
 
-# ==============================================================================
-# TRANSLATION & UNFILTERED KEYWORD AUTO-CATEGORIZATION
-# ==============================================================================
-def translate_title_to_english(title):
-    try:
-        translated = GoogleTranslator(source='auto', target='en').translate(title)
-        return translated if translated else title
-    except Exception as e:
-        return title
-
-def auto_detect_category_from_title(title):
-    title_lower = title.lower()
-    
-    if any(k in title_lower for k in ["audit", "compliance", "system", "report"]):
-        return "System Audit & Compliance"
-    elif any(k in title_lower for k in ["documentary", "history", "educational", "science"]):
-        return "Documentary & Educational"
-    elif any(k in title_lower for k in ["3d", "cgi", "render", "blender", "unreal"]):
-        return "3D Animation & CGI Render"
-    elif any(k in title_lower for k in ["anime", "2d", "hentai", "manga", "illustration", "cosplay", "uncensored"]):
-        return "2D Anime & Digital Art"
-    elif any(k in title_lower for k in ["milf", "amateur", "pov", "anal", "creampie", "blowjob", "jav", "adult"]):
-        return "General Adult / Mature Content"
-    elif any(k in title_lower for k in ["asmr", "audio", "voiceover"]):
-        return "ASMR & Voiceover Storytelling"
-    else:
-        return "General AI Production"
-
-# ==============================================================================
-# METADATA EXTRACTION & INDEXER
-# ==============================================================================
-def get_video_metadata(file_path):
-    try:
-        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            return json.loads(result.stdout)
-    except Exception:
-        pass
-    return {}
-
-def index_video_file(file_path, category="Learned Asset"):
-    filename = os.path.basename(file_path)
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    duration = 0.0
-    resolution = "Unknown"
-
-    try:
-        cap = cv2.VideoCapture(file_path)
-        if cap.isOpened():
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            if fps > 0:
-                duration = round(frame_count / fps, 2)
-            resolution = f"{width}x{height}"
-            cap.release()
-    except Exception as e:
-        logging.warning(f"Metadata extraction error: {e}")
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO assets (filename, filepath, category, timestamp) VALUES (?, ?, ?, ?)', 
-                   (filename, file_path, category, now_str))
-    cursor.execute('INSERT INTO learned_dataset (timestamp, filename, file_path, category, duration_sec, resolution) VALUES (?, ?, ?, ?, ?, ?)', 
-                   (now_str, filename, file_path, category, duration, resolution))
-    conn.commit()
-    conn.close()
-
-    json_data = []
-    if os.path.exists(OUTPUT_KNOWLEDGE_FILE):
-        try:
-            with open(OUTPUT_KNOWLEDGE_FILE, 'r', encoding='utf-8') as f:
-                json_data = json.load(f)
-        except Exception:
-            json_data = []
-
-    json_entry = {
-        "timestamp": now_str,
-        "filename": filename,
-        "file_path": file_path,
-        "category": category,
-        "duration_sec": duration,
-        "resolution": resolution,
-        "ffprobe_meta": get_video_metadata(file_path)
-    }
-    json_data.append(json_entry)
-
-    with open(OUTPUT_KNOWLEDGE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(json_data, f, indent=4, ensure_ascii=False)
-
-def scan_and_link_all_directories():
-    total_indexed = 0
-    for target_dir in TARGET_LEARNING_DIRS:
-        if not os.path.exists(target_dir):
-            continue
-        for root, _, files in os.walk(target_dir):
-            for file in files:
-                if file.lower().endswith(SUPPORTED_EXTENSIONS):
-                    full_path = os.path.abspath(os.path.join(root, file))
-                    
-                    conn = sqlite3.connect(DB_PATH)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT id FROM learned_dataset WHERE file_path = ?", (full_path,))
-                    exists = cursor.fetchone()
-                    conn.close()
-
-                    if not exists:
-                        translated_name = translate_title_to_english(file)
-                        cat_tag = auto_detect_category_from_title(translated_name)
-                        index_video_file(full_path, category=cat_tag)
-                        total_indexed += 1
-
-    return f"Scan Complete: Indexed {total_indexed} new video assets into Database & absorbed_data.json."
-
-def start_continuous_background_watcher():
-    def watcher_loop():
-        while True:
-            try:
-                scan_and_link_all_directories()
-            except Exception as e:
-                logging.error(f"Watcher loop error: {e}")
-            time.sleep(15)
-
-    t = threading.Thread(target=watcher_loop, daemon=True)
-    t.start()
-
-start_continuous_background_watcher()
-
-# ==============================================================================
-# AUDIO SYNTHESIS ENGINE
-# ==============================================================================
-async def generate_speech_audio(text, output_audio_path):
-    try:
-        communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
-        await communicate.save(output_audio_path)
-        return True
-    except Exception as e:
-        return False
-
-# ==============================================================================
-# DOWNLOADER FUNCTION
-# ==============================================================================
-def download_video(url, selected_category, custom_tag=""):
-    if not url:
-        return "Please provide a valid URL.", None
-
-    download_target = TARGET_LEARNING_DIRS[0]
-
-    ydl_opts = {
-        'outtmpl': os.path.join(download_target, '%(title)s.%(ext)s'),
-        'format': 'bestvideo+bestaudio/best',
-        'noplaylist': True,
-        'quiet': False,
-        'retries': 10,
-        'fragment_retries': 10,
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=True)
-            filepath = ydl.prepare_filename(info_dict)
-            video_title = info_dict.get('title', '')
-
-        english_title = translate_title_to_english(video_title)
-
-        if custom_tag.strip():
-            final_category = custom_tag.strip()
-        elif selected_category and selected_category != "General AI Production":
-            final_category = selected_category
-        else:
-            final_category = auto_detect_category_from_title(english_title)
-
-        index_video_file(filepath, final_category)
-        return f"Download, Translation & Auto-Indexing Complete: '{english_title}' [Tag: {final_category}]", filepath
-    except Exception as e:
-        return f"Error downloading video: {str(e)}", None
-
-# ==============================================================================
-# STUDIO GENERATOR ENGINE
-# ==============================================================================
-def generate_scene(preset, custom_tag, prompt, negative_prompt, dialogue, duration_hours, duration_minutes, seed):
-    total_seconds = (duration_hours * 3600) + (duration_minutes * 60)
-    if total_seconds < 60: total_seconds = 60
-    if total_seconds > 86400: total_seconds = 86400
-
-    active_category = custom_tag.strip() if custom_tag.strip() else preset
-    formatted_time = str(datetime.timedelta(seconds=total_seconds))
-    
-    audio_file = os.path.join(OUTPUT_DIR, f"speech_{int(time.time())}.mp3")
-    if dialogue.strip():
-        asyncio.run(generate_speech_audio(dialogue, audio_file))
-
-    status = f"Render Profile Active: '{active_category}'. Duration: {formatted_time} ({total_seconds}s). Device: {DEVICE_NAME}. Seed: {seed}."
-    return status, None
-
-def trigger_vram_flush_api():
-    try:
-        res = requests.get("http://127.0.0.1:8080/flush", timeout=2)
-        return res.json().get("message", "Flush triggered.")
-    except Exception:
-        return "Coordinator Server Offline (Local Fallback active)."
-
-def fetch_telemetry_status():
-    try:
-        res = requests.get("http://127.0.0.1:8080/telemetry", timeout=2)
-        data = res.json()
-        return f"CPU: {data['cpu_usage_percent']}% | RAM: {data['ram_used_gb']}/{data['ram_total_gb']}GB | VRAM Allocated: {data['gpu']['vram_allocated_mb']}MB"
-    except Exception:
-        return f"Device Target: {DEVICE_NAME} (Coordinator Offline)"
-
-def get_vault_assets():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT filename, filepath, category, timestamp FROM assets ORDER BY id DESC")
-    records = cursor.fetchall()
-    conn.close()
-    return records
-
-def get_learned_dataset():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT timestamp, filename, file_path, category, duration_sec, resolution FROM learned_dataset ORDER BY id DESC")
-    records = cursor.fetchall()
-    conn.close()
-    return records
-
-# ==============================================================================
-# GRADIO INTERFACE BUILDER
-# ==============================================================================
-def build_ui():
-    CATEGORIES = [
-        "System Audit & Compliance",
-        "General AI Production",
-        "3D Animation & CGI Render",
-        "2D Anime & Digital Art",
-        "Photorealistic & Cinematic",
-        "Stylized Illustration & Concept Art",
-        "Cinematic Film & Drama",
-        "Sci-Fi & Cyberpunk",
-        "Fantasy & Mythological",
-        "Action & VFX Motion",
-        "Documentary & Educational",
-        "Commercial & Product Showcase",
-        "ASMR & Voiceover Storytelling",
-        "General Adult / Mature Content",
-        "Custom Category"
-    ]
-
-    with gr.Blocks(title="Apex AI Studio & Real-Time Learning Engine") as app:
-        gr.Markdown(f"# 🎬 Apex AI Studio & Real-Time Auto-Learning Engine\n**Hardware Target:** `{DEVICE_NAME}`")
+    @staticmethod
+    def compose_production_blueprint(prompt: str, platform: str, duration: int, style: str, voice: str) -> dict:
+        logging.info(f"[*] [SingularityDirector] Synthesizing blueprint for: '{prompt}'")
         
-        with gr.Row():
-            telemetry_box = gr.Textbox(value=fetch_telemetry_status, label="Hardware Telemetry", interactive=False)
-            flush_btn = gr.Button("🧹 Flush VRAM & Memory Cache", variant="secondary")
+        aspect_ratio = "9:16" if platform == "vertical_short" else "16:9"
+        scene_count = max(2, duration // 5)
+        scene_duration = duration // scene_count
 
-        flush_btn.click(fn=trigger_vram_flush_api, outputs=[telemetry_box])
+        scenes = []
+        for i in range(1, scene_count + 1):
+            scenes.append({
+                "scene_id": i,
+                "duration_sec": scene_duration,
+                "visual_prompt": f"Scene {i}: {prompt}, style={style}, high dynamic range, cinematic lighting, 8k render",
+                "negative_prompt": "blurry, low quality, distortion, ugly, extra limbs, artifacts",
+                "voiceover_script": f"Segment {i} overview for {prompt}.",
+                "camera_movement": "slow_zoom_in" if i % 2 != 0 else "pan_right",
+                "aspect_ratio": aspect_ratio
+            })
 
-        with gr.Tabs():
-            with gr.Tab("Studio Generator"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        preset = gr.Dropdown(choices=CATEGORIES, value="System Audit & Compliance", label="Production Category Preset")
-                        custom_tag = gr.Textbox(label="Custom Category / Tag Override", placeholder="Type custom tag or category string here...")
-                        prompt = gr.Textbox(lines=3, label="Image Prompt", value="A high-tech master audit room filled with glowing holographic data streams...")
-                        neg_prompt = gr.Textbox(lines=3, label="Negative Prompt", value="(deformed, distorted, disfigured:1.3), poorly drawn face, poorly drawn hands...")
-                        dialogue = gr.Textbox(lines=2, label="Voice Dialogue Track", value="System audit initialized. All neural cores are online.")
-                        
-                        gr.Markdown("### Video Target Runtime (1 Minute to 24 Hours)")
-                        with gr.Row():
-                            duration_hours = gr.Slider(minimum=0, maximum=24, value=0, step=1, label="Hours")
-                            duration_minutes = gr.Slider(minimum=1, maximum=59, value=5, step=1, label="Minutes")
+        blueprint = {
+            "meta": {
+                "engine": "Singularity-Master-Kernel-v5.0",
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "target_platform": platform,
+                "visual_style": style
+            },
+            "audio_config": {
+                "voice_id": voice,
+                "bg_music_style": "cinematic_ambient_synth",
+                "ducking_level": 0.85
+            },
+            "scenes": scenes,
+            "post_processing": {
+                "upscale_target": "4k",
+                "burn_captions": True,
+                "color_grade": "teal_and_orange"
+            }
+        }
+        return blueprint
 
-                        seed = gr.Number(value=42, label="Seed", precision=0)
-                        gen_btn = gr.Button("🚀 Generate Video Scene", variant="primary")
-                        
-                    with gr.Column(scale=1):
-                        rendered_video = gr.Video(label="Rendered Video Output")
-                        gen_status = gr.Textbox(label="Status Log")
 
-                gen_btn.click(
-                    fn=generate_scene,
-                    inputs=[preset, custom_tag, prompt, neg_prompt, dialogue, duration_hours, duration_minutes, seed],
-                    outputs=[gen_status, rendered_video]
-                )
+def generate_ai_video_action(prompt: str, platform: str, duration: int, style: str, voice: str) -> str:
+    """Executes scene blueprint generation and dispatches rendering jobs."""
+    if not prompt or not prompt.strip():
+        return "[!] Error: Video prompt cannot be empty."
 
-            with gr.Tab("Global Video Downloader"):
-                gr.Markdown("### Universal Web Video Extraction Engine")
-                
-                url_input = gr.Textbox(label="Target Video URL", placeholder="https://...")
-                cat_dropdown = gr.Dropdown(choices=CATEGORIES, value="General AI Production", label="Assign Category Tag for Indexing")
-                custom_download_tag = gr.Textbox(label="Custom Tag (Optional)", placeholder="Type custom category tag...")
-                download_btn = gr.Button("⚡ Extract & Download Video", variant="primary")
-                status_output = gr.Textbox(label="Engine Status")
-                video_output = gr.Video(label="Downloaded Video Preview")
+    blueprint = SingularityLLMDirector.compose_production_blueprint(
+        prompt, platform, duration, style, voice
+    )
 
-                download_btn.click(
-                    fn=download_video,
-                    inputs=[url_input, cat_dropdown, custom_download_tag],
-                    outputs=[status_output, video_output]
-                )
+    # Save generated blueprint to output directory
+    blueprint_file = os.path.join(OUTPUT_DIR, f"blueprint_{int(time.time())}.json")
+    with open(blueprint_file, "w", encoding="utf-8") as f:
+        json.dump(blueprint, f, indent=2)
 
-            with gr.Tab("Master Video Vault & Learning Index"):
-                gr.Markdown("### Linked Folders Sync & Scan")
-                sync_btn = gr.Button("🔄 Manual Force-Sync Local Folders", variant="secondary")
-                sync_log = gr.Textbox(label="Sync Status")
+    return (
+        f"[+] SINGULARITY MASTER BLUEPRINT GENERATED SUCCESSFULLY!\n"
+        f"Saved Blueprint to: {blueprint_file}\n\n"
+        f"--- PRODUCTION SCHEMA ---\n"
+        f"{json.dumps(blueprint, indent=2)}"
+    )
 
-                gr.Markdown("### Asset Registry Index")
-                vault_table = gr.Dataframe(headers=["Filename", "Filepath", "Category", "Timestamp"], value=get_vault_assets)
-                
-                gr.Markdown("### Learned Dataset Index (Real-time Auto-Indexed)")
-                dataset_table = gr.Dataframe(headers=["Timestamp", "Filename", "File Path", "Category", "Duration (Sec)", "Resolution"], value=get_learned_dataset)
-                
-                sync_btn.click(fn=scan_and_link_all_directories, outputs=[sync_log])
-                sync_btn.click(fn=get_vault_assets, outputs=[vault_table])
-                sync_btn.click(fn=get_learned_dataset, outputs=[dataset_table])
 
-    return app
+# ==========================================
+# 2. AUTOMATED COOKIE SCRAPER & DOWNLOADER
+# ==========================================
+
+def auto_download_video_action(url_input: str, browser_choice: str = "firefox") -> str:
+    """Bypasses Cloudflare HTTP 403 blocks using active browser cookies and enforces exact video page titles."""
+    if not url_input or not url_input.strip():
+        return "[!] Error: Please provide one or more video links."
+
+    urls = [u.strip() for u in url_input.splitlines() if u.strip()]
+    results = []
+
+    for idx, url in enumerate(urls, 1):
+        logging.info(f"[*] [{idx}/{len(urls)}] Processing url with {browser_choice} cookies: {url}")
+        
+        # Build yt-dlp execution command
+        cmd = [
+            "yt-dlp",
+            "--cookies-from-browser", browser_choice,
+            "-P", f'"{INPUT_DIR}"',
+            "-o", '"%(title)s.%(ext)s"',
+            "--restrict-filenames",
+            f'"{url}"'
+        ]
+
+        full_cmd = " ".join(cmd)
+        
+        try:
+            res = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
+            if res.returncode == 0:
+                results.append(f"[SUCCESS] Downloaded ({idx}/{len(urls)}): {url}")
+            else:
+                err_text = res.stderr.strip() if res.stderr else "Unknown download failure."
+                results.append(f"[ERROR] Download Failed ({idx}/{len(urls)}): {url}\n    Log: {err_text[:250]}")
+        except Exception as e:
+            results.append(f"[EXCEPTION] System Error ({idx}/{len(urls)}): {url}\n    Details: {str(e)}")
+
+    return "\n".join(results)
+
+
+# ==========================================
+# 3. DATASET AUTO-ANNOTATOR PIPELINE
+# ==========================================
+
+def trigger_dataset_annotation_action() -> str:
+    """Executes dataset keyframe extraction and auto-captioning on downloaded videos."""
+    annotator_script = os.path.join(BASE_DIR, "dataset_auto_annotator.py")
+    
+    if os.path.exists(annotator_script):
+        logging.info("[*] Executing dataset auto-annotator script...")
+        try:
+            res = subprocess.run(f"python {annotator_script}", shell=True, capture_output=True, text=True)
+            if res.returncode == 0:
+                return f"[+] Dataset Auto-Annotation Completed:\n{res.stdout}"
+            else:
+                return f"[!] Annotation Execution Log:\n{res.stderr}"
+        except Exception as e:
+            return f"[!] Exception during annotation execution: {str(e)}"
+    else:
+        return f"[*] Annotator module '{annotator_script}' not found. Dataset folder active at: {DATASET_DIR}"
+
+
+# ==========================================
+# 4. PORT MANAGEMENT & SERVER LAUNCHER
+# ==========================================
+
+def find_available_port(start_port: int = 7862, max_attempts: int = 20) -> int:
+    """Finds an open TCP port starting from the requested port number."""
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return start_port
+
+
+# ==========================================
+# 5. GRADIO UNIFIED MASTER INTERFACE
+# ==========================================
+
+with gr.Blocks(title="Apex AI Studio - Master Singularity Kernel") as demo:
+    gr.Markdown("# ⚡ Apex AI Studio - Master Unified Kernel")
+    gr.Markdown("Unified platform for automated video generation, cookie-authenticated video downloading, and dataset auto-annotation.")
+
+    with gr.Tabs():
+        
+        # TAB 1: AI VIDEO GENERATOR
+        with gr.TabItem("🎬 AI Video Studio Generator"):
+            gr.Markdown("### 1-Click Multi-Shot Storyboard & Video Generator")
+            with gr.Row():
+                with gr.Column(scale=2):
+                    prompt_input = gr.Textbox(
+                        label="Video Scene Script or Detailed Concept",
+                        placeholder="Enter video prompt or detailed concept here...",
+                        lines=6
+                    )
+                    with gr.Row():
+                        platform_select = gr.Dropdown(
+                            choices=["vertical_short", "horizontal_youtube", "square_social"],
+                            value="vertical_short",
+                            label="Target Format / Aspect Ratio"
+                        )
+                        style_select = gr.Dropdown(
+                            choices=["Cinematic Photorealistic", "Anime / Illustrative", "3D Octane Render", "VTuber Dynamic"],
+                            value="Cinematic Photorealistic",
+                            label="Visual Style Render Tier"
+                        )
+                    with gr.Row():
+                        duration_slider = gr.Slider(minimum=5, maximum=60, value=15, step=5, label="Duration (Seconds)")
+                        voice_select = gr.Dropdown(
+                            choices=["en-US-ChristopherNeural", "en-US-JennyNeural", "ja-JP-NanamiNeural"],
+                            value="en-US-ChristopherNeural",
+                            label="Narrator Voice Engine"
+                        )
+                    
+                    generate_btn = gr.Button("🚀 Generate & Dispatch Production Blueprint", variant="primary", size="lg")
+
+                with gr.Column(scale=2):
+                    gen_output = gr.Textbox(label="Singularity Orchestrator Output & JSON Blueprint", lines=18, interactive=False)
+
+            generate_btn.click(
+                fn=generate_ai_video_action,
+                inputs=[prompt_input, platform_select, duration_slider, style_select, voice_select],
+                outputs=gen_output
+            )
+
+        # TAB 2: AUTOMATED DATASET DOWNLOADER & SCRAPER
+        with gr.TabItem("📥 Automated Video Scraper & Downloader"):
+            gr.Markdown("### Cookie-Authenticated Video Downloader & Scraper")
+            gr.Markdown("Directly fetches media into `input_videos/` using browser session cookies to bypass Cloudflare 403 blocks.")
+            
+            with gr.Row():
+                with gr.Column(scale=3):
+                    url_box = gr.Textbox(
+                        label="Target Video URLs (Paste links, one per line)",
+                        placeholder="https://spankbang.com/...\nhttps://pornhub.com/...",
+                        lines=8
+                    )
+                with gr.Column(scale=1):
+                    browser_dropdown = gr.Dropdown(
+                        choices=["firefox", "chrome", "edge", "brave", "opera"],
+                        value="firefox",
+                        label="Cookie Source Browser",
+                        info="Select your active web browser to bypass Cloudflare 403 blocks."
+                    )
+                    download_btn = gr.Button("🚀 Auto-Download All Videos", variant="primary", size="lg")
+                    annotate_btn = gr.Button("🏷️ Run Dataset Auto-Annotator", variant="secondary")
+
+            status_output = gr.Textbox(label="Execution Output Logs", lines=12, interactive=False)
+
+            download_btn.click(
+                fn=auto_download_video_action,
+                inputs=[url_box, browser_dropdown],
+                outputs=status_output
+            )
+            
+            annotate_btn.click(
+                fn=trigger_dataset_annotation_action,
+                inputs=[],
+                outputs=status_output
+            )
 
 if __name__ == "__main__":
-    app = build_ui()
-    app.queue().launch(server_name="127.0.0.1", inbrowser=True)
+    target_port = find_available_port(7862)
+    logging.info(f"[*] Launching Apex AI Studio Master Web Interface on port {target_port}...")
+    demo.launch(server_name="127.0.0.1", server_port=target_port)

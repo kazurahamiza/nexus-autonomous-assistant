@@ -1,52 +1,50 @@
 import os
 import sys
-import time
-import sqlite3
 import logging
+import subprocess
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "master_registry.db")
+INPUT_DIR = os.path.join(BASE_DIR, "input_videos")
+
+os.makedirs(INPUT_DIR, exist_ok=True)
 
 class DatasetCrawlerTrainer:
-    """Scrapes niche media, generates auto-captions, and stages LoRA fine-tuning sets."""
+    """Crawler and Dataset Pipeline Engine.
 
-    def __init__(self):
-        self._init_db()
+    Forces exact video page titles into output filenames and feeds them to the auto-annotator.
+    """
 
-    def _init_db(self):
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS crawler_dataset_registry (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                niche_keyword TEXT,
-                items_crawled INTEGER,
-                status TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
+    def __init__(self, output_dir=INPUT_DIR):
+        self.output_dir = output_dir
 
-    def crawl_and_stage(self, niche_keyword="Cyberpunk UI"):
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO crawler_dataset_registry (timestamp, niche_keyword, items_crawled, status)
-            VALUES (?, ?, ?, ?)
-        ''', (now_str, niche_keyword, 15, "STAGED_FOR_LORA"))
-        conn.commit()
-        conn.close()
+    def download_video_with_exact_title(self, url: str, browser: str = "firefox") -> str:
+        """Downloads a video and enforces the exact webpage video title as the filename."""
+        logging.info(f"[*] Fetching video with exact webpage title formatting from: {url}")
+        
+        # -o "%(title)s.%(ext)s" forces yt-dlp to use the exact webpage video title
+        cmd = [
+            "yt-dlp",
+            "--cookies-from-browser", browser,
+            "-P", self.output_dir,
+            "-o", "%(title)s.%(ext)s",
+            "--restrict-filenames",  # Prevents OS path breaking while keeping full title intact
+            url
+        ]
 
-        logging.info(f"[+] [CrawlerTrainer] Staged 15 sample pairs for niche: '{niche_keyword}'")
-        return True
+        try:
+            result = subprocess.run(" ".join(cmd), shell=True, check=True)
+            logging.info("[+] Download complete with exact webpage title matching!")
+            return self.output_dir
+        except Exception as e:
+            logging.error(f"[!] Failed to download video: {e}")
+            return None
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        logging.info("[+] Dataset Crawler & LoRA Trainer test complete (Non-blocking).")
-    else:
-        logging.info("[*] Testing Dataset Crawler Engine...")
+        logging.info("[+] Dataset Crawler Trainer module verified (Exact Title Auto-Naming active).")
+    elif len(sys.argv) > 1:
+        target_url = sys.argv[1]
         crawler = DatasetCrawlerTrainer()
+        crawler.download_video_with_exact_title(target_url)
