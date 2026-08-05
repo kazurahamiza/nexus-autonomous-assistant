@@ -36,12 +36,11 @@ except ImportError:
     HAS_TORCH = False
     CUDA_AVAILABLE = False
 
-# Import local AI video generation module if available
 try:
-    from ai_video_generator import DynamicVideoGenerator
-    HAS_VIDEO_GEN_ENGINE = True
+    from diffusers import StableVideoDiffusionPipeline
+    HAS_DIFFUSERS = True
 except ImportError:
-    HAS_VIDEO_GEN_ENGINE = False
+    HAS_DIFFUSERS = False
 
 # =========================================================
 # 0. SYSTEM LOGGING & DIRECTORY HIERARCHY CONFIGURATION
@@ -49,7 +48,7 @@ except ImportError:
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [MASTER-AUDIT-CORE] %(message)s",
+    format="[%(asctime)s] [%(levelname)s] [MASTER-STUDIO-CORE] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler("system_pipeline.log", encoding="utf-8")
@@ -66,7 +65,7 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_processing")
 LEARNING_DB = os.path.join(BASE_DIR, "ai_learning_telemetry.json")
 
-# Master Audit & Storytelling Category Mapping
+# Master Category Hierarchy Mapping
 CATEGORY_MAP = {
     "Audit_Chinese_Storytelling": "dataset/audit_chinese_storytelling",
     "Audit_General_Storytelling": "dataset/audit_general_storytelling",
@@ -94,15 +93,8 @@ GPU_LOCK = threading.Lock()
 CLIPBOARD_CACHE = ""
 IS_WATCHER_RUNNING = True
 
-# Initialize video generation engine instance
-if HAS_VIDEO_GEN_ENGINE:
-    video_gen_instance = DynamicVideoGenerator()
-else:
-    video_gen_instance = None
-
 logging.info(f"Initialized Core Master Environment. Base Path: {BASE_DIR}")
-logging.info(f"Hardware Acceleration Status -> PyTorch: {HAS_TORCH}, CUDA: {CUDA_AVAILABLE}")
-logging.info(f"AI Video Generation Engine Loaded: {HAS_VIDEO_GEN_ENGINE}")
+logging.info(f"Hardware Acceleration Status -> PyTorch: {HAS_TORCH}, CUDA: {CUDA_AVAILABLE}, Diffusers: {HAS_DIFFUSERS}")
 
 # =========================================================
 # 1. AI TELEMETRY & AUTO-LEARNING ENGINE
@@ -259,7 +251,6 @@ def scan_and_learn_all_videos():
 
 def background_auto_learning_loop(poll_interval=10):
     """Background monitoring loop that runs continuously."""
-    logging.info("Auto-Learning background watcher active.")
     while IS_WATCHER_RUNNING:
         try:
             scan_and_learn_all_videos()
@@ -423,24 +414,48 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
             cv2.imwrite(temp_img_path, cv2.cvtColor(init_image, cv2.COLOR_RGB2BGR))
         elif isinstance(init_image, Image.Image):
             init_image.save(temp_img_path)
-        elif isinstance(init_image, str) and os.path.exists(init_image):
-            temp_img_path = init_image
 
-    # If local video generator module is active, run diffusion synthesis
-    if HAS_VIDEO_GEN_ENGINE and video_gen_instance is not None:
+    # 1. GPU Diffusion Video Generation (If CUDA + PyTorch Diffusers pipeline exists)
+    if HAS_TORCH and CUDA_AVAILABLE and HAS_DIFFUSERS:
         try:
-            out_file = video_gen_instance.generate_action_video(
-                input_image_path=temp_img_path if temp_img_path else os.path.join(BASE_DIR, "default_seed.jpg"),
-                prompt_motion_text=script_text,
-                motion_bucket_id=int(motion_scale),
-                num_frames=int(target_duration_frames)
+            logging.info("Initializing GPU Video Diffusion Pipeline...")
+            pipe = StableVideoDiffusionPipeline.from_pretrained(
+                "stabilityai/stable-video-diffusion-img2vid-xt",
+                torch_dtype=torch.float16,
+                variant="fp16"
             )
-            scan_and_learn_all_videos()
-            return out_file, f"AI Video Generation Complete! Rendered with Motion Scale: {motion_scale}"
-        except Exception as e:
-            logging.error(f"Error during video generation execution: {e}")
+            pipe.enable_model_cpu_offload()
 
-    # Advanced Procedural Dynamic Motion Generator (Fallback Engine)
+            if temp_img_path and os.path.exists(temp_img_path):
+                img_input = Image.open(temp_img_path).convert("RGB").resize((1024, 576))
+            else:
+                img_input = Image.new("RGB", (1024, 576), color=(20, 20, 30))
+
+            generator = torch.manual_seed(42)
+            frames = pipe(
+                img_input,
+                decode_chunk_size=8,
+                generator=generator,
+                motion_bucket_id=int(motion_scale),
+                noise_aug_strength=0.02,
+                num_frames=int(min(target_duration_frames, 25))
+            ).frames[0]
+
+            out_filename = f"gen_gpu_action_{int(time.time())}.mp4"
+            out_path = os.path.join(OUTPUT_DIR, out_filename)
+            writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), 24, (1024, 576))
+
+            for f_frame in frames:
+                f_np = np.array(f_frame)
+                writer.write(cv2.cvtColor(f_np, cv2.COLOR_RGB2BGR))
+            writer.release()
+
+            scan_and_learn_all_videos()
+            return out_path, f"GPU Diffusion Video Generation Finished! Saved to: {out_path}"
+        except Exception as e:
+            logging.error(f"Diffusion generation error: {e}. Falling back to dynamic procedural action render.")
+
+    # 2. Dynamic Procedural Action Generator (High Performance Local Fallback Engine)
     output_filename = f"action_story_{int(time.time())}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
     fps = 30
@@ -451,9 +466,9 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         base_frame = cv2.imread(temp_img_path)
         base_frame = cv2.resize(base_frame, (w, h))
     else:
-        # Generate dynamic cinematic background render
+        # Create dynamic high-contrast background render
         base_frame = np.zeros((h, w, 3), dtype=np.uint8)
-        cv2.rectangle(base_frame, (0, 0), (w, h), (30, 20, 10), -1)
+        cv2.rectangle(base_frame, (0, 0), (w, h), (25, 20, 15), -1)
         cv2.putText(base_frame, "MASTER AUDIT REAL ACTION ENGINE", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
 
     total_frames = int(target_duration_frames)
@@ -462,7 +477,7 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     for i in range(total_frames):
         frame = base_frame.copy()
         
-        # 1. Dynamic Camera Movement (Pan & Zoom effect)
+        # Action Movement: Pan, Tilt, Zoom transformation
         scale_val = 1.0 + 0.08 * np.sin(i * 0.05 * motion_factor)
         dx = int(25 * np.cos(i * 0.08 * motion_factor))
         dy = int(15 * np.sin(i * 0.08 * motion_factor))
@@ -470,16 +485,15 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
         M = np.float32([[scale_val, 0, dx], [0, scale_val, dy]])
         frame = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_REFLECT)
         
-        # 2. Render Motion Action Effects & Model Silhouette Layer
-        cx = int(w / 2 + 200 * np.sin(i * 0.1 * motion_factor))
-        cy = int(h / 2 + 50 * np.cos(i * 0.1 * motion_factor))
+        # Action Movement: Dynamic lighting pulses & tracking sweeps
+        cx = int(w / 2 + 220 * np.sin(i * 0.1 * motion_factor))
+        cy = int(h / 2 + 60 * np.cos(i * 0.1 * motion_factor))
         
-        # Render dynamic lighting pulse
         overlay = frame.copy()
-        cv2.circle(overlay, (cx, cy), 120, (255, 180, 50), -1)
-        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+        cv2.circle(overlay, (cx, cy), 130, (255, 180, 50), -1)
+        cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
 
-        # Draw Audit Action HUD Telemetry overlay
+        # Telemetry HUD Overlay
         cv2.putText(frame, f"ACTION FRAME: {i+1}/{total_frames} | MOTION BUCKET: {motion_scale}", (40, h - 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 200), 2)
 
@@ -495,6 +509,14 @@ def generate_ai_action_video(script_text, init_image, category_target, motion_sc
     scan_and_learn_all_videos()
 
     return output_path, f"Rendered {total_frames} Action Motion Frames to: {output_path}"
+
+def fetch_local_generated_videos():
+    """Returns a list of local output MP4 files sorted by creation date."""
+    files = glob.glob(os.path.join(OUTPUT_DIR, "*.mp4"))
+    if not files:
+        return []
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files
 
 # =========================================================
 # 5. CODE100 CHINESE DATASET PARSER
@@ -557,8 +579,25 @@ custom_css = """
 """
 
 with gr.Blocks() as demo:
-    gr.Markdown("# 🏛️ Master Audit & AI Action Video Generation System")
+    gr.Markdown("# ⚡ Apex AI Studio - DownloadHelper Automation, CUDA 8K Converter & Studio Kernel")
     gr.Markdown("Real Action Motion Generation | Chinese Storytelling Datasets | Keyframe Extraction | Optical Tagger")
+
+    with gr.Tab("📥 Video DownloadHelper & CUDA 8K Converter"):
+        gr.Markdown("### Direct Media Export & Batch Downloader")
+        refresh_downloads_btn = gr.Button("🔄 Refresh Output Videos List", variant="primary")
+        download_dropdown = gr.Dropdown(choices=fetch_local_generated_videos(), label="Select Generated Output Video")
+        download_file_widget = gr.File(label="Download Media File Target")
+
+        def update_download_file(selected_path):
+            if selected_path and os.path.exists(selected_path):
+                return selected_path
+            return None
+
+        refresh_downloads_btn.click(
+            fn=lambda: gr.update(choices=fetch_local_generated_videos()),
+            outputs=[download_dropdown]
+        )
+        download_dropdown.change(fn=update_download_file, inputs=[download_dropdown], outputs=[download_file_widget])
 
     with gr.Tab("🎬 AI Learning Video Generator"):
         gr.Markdown("### Full Action Motion & Character Story Video Generator")
