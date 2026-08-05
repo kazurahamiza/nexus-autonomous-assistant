@@ -13,3 +13,6 @@ ComfyUI/output/
 ComfyUI/input/
 ComfyUI/models/
 autostart_system.log
+vector_index.json
+published_analytics.json
+self_learning_brutal_ai/dataset/
