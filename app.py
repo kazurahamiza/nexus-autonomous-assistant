@@ -94,7 +94,12 @@ def load_telemetry_db():
         if os.path.exists(LEARNING_DB):
             try:
                 with open(LEARNING_DB, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if not isinstance(data, dict):
+                        data = {}
+                    if "learned_videos" not in data:
+                        data["learned_videos"] = {}
+                    return data
             except Exception as e:
                 logging.error(f"Failed to load telemetry database: {e}")
                 return {"learned_videos": {}, "system_metadata": {}, "last_updated": time.time()}
@@ -192,8 +197,9 @@ def process_single_video(file_path, category, db):
     file_key = os.path.relpath(file_path, BASE_DIR)
     mtime = os.path.getmtime(file_path)
     
-    if file_key in db["learned_videos"]:
-        if db["learned_videos"][file_key].get("mtime") == mtime:
+    learned_videos = db.get("learned_videos", {})
+    if file_key in learned_videos:
+        if learned_videos[file_key].get("mtime") == mtime:
             return False
 
     features = extract_video_features(file_path)
@@ -204,7 +210,7 @@ def process_single_video(file_path, category, db):
     features["learned_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     features["mtime"] = mtime
     
-    db["learned_videos"][file_key] = features
+    db.setdefault("learned_videos", {})[file_key] = features
     return True
 
 def scan_and_learn_all_videos():
@@ -229,7 +235,7 @@ def scan_and_learn_all_videos():
         save_telemetry_db(db)
         logging.info(f"Auto-learning scan complete. Ingested {new_learned_count} asset(s).")
     
-    return len(db["learned_videos"]), new_learned_count
+    return len(db.get("learned_videos", {})), new_learned_count
 
 def background_auto_learning_loop(poll_interval=10):
     """Background monitoring loop that runs continuously."""
@@ -382,7 +388,7 @@ def run_auto_tagger():
     return f"Auto-Tagging Complete! Generated {tagged} new caption tag file(s)."
 
 # =========================================================
-# 4. FFMPEG & HARDWARE ACCELERATED TRANSCODING ENGINE
+# 4. TRANSCODING & PROCESSING ENGINE
 # =========================================================
 
 def apply_illustrative_filter(frame):
@@ -522,7 +528,7 @@ custom_css = """
 .status-box { font-family: monospace; font-size: 13px; }
 """
 
-with gr.Blocks(title="AI Unified Video Processing & Learning Platform", css=custom_css) as demo:
+with gr.Blocks() as demo:
     gr.Markdown("# 🚀 Unified AI Video Processing & Auto-Learning System")
     gr.Markdown("Deep Video Telemetry | Continuous Auto-Learning | Keyframe Extraction | Optical Tagger | Transcoding Engine")
 
@@ -585,4 +591,10 @@ with gr.Blocks(title="AI Unified Video Processing & Learning Platform", css=cust
 if __name__ == "__main__":
     logging.info("Starting up unified pipeline engine...")
     scan_and_learn_all_videos()
-    demo.queue().launch(server_name="0.0.0.0", server_port=7860, share=False, show_error=True)
+    demo.queue().launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        show_error=True,
+        css=custom_css
+    )
